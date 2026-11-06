@@ -1,0 +1,17 @@
+# Local secrets and experiment data: never commit these
+source API/api_keys.env
+.env
+API*.txt
+PUBLIC/
+read_this/
+yfin/
+.vscode/
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+crash.log
+
+__pycache__/
+*.pyc
+.venv/

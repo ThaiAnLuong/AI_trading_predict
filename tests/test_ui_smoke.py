@@ -1,0 +1,311 @@
+"""Opens the real window with demo data and drives the main flows."""
+import shutil
+import tempfile
+import tkinter as tk
+import unittest
+from datetime import timedelta
+from pathlib import Path
+from tkinter import ttk
+from unittest import mock
+
+from paper_trader import __version__
+from paper_trader.config import get_paths
+from paper_trader.context import AppContext
+from paper_trader.demo_seed import seed_demo
+from paper_trader.money import D
+from paper_trader.performance import take_snapshots
+from paper_trader.ui import admin, common, dashboard, tabs
+from paper_trader.ui import lessons as lessons_ui
+from paper_trader.ui.app import App
+from paper_trader.ui.chart import nice_ticks
+from paper_trader.valuation import load_state
+
+
+class Ticks(unittest.TestCase):
+    def test_ticks_cover_the_range(self):
+        ticks = nice_ticks(9812.0, 10377.0)
+        self.assertLessEqual(ticks[0], 9812)
+        self.assertGreaterEqual(ticks[-1], 10377)
+
+    def test_a_flat_or_tiny_range_still_gives_a_usable_axis(self):
+        for low, high in ((10000.0, 10000.0), (100.0, 100.0), (0.0, 0.0), (9999.99, 10000.0),
+                          (10000.0, 10000.01), (-5.0, -5.0), (0.01, 0.01), (2500.0, 2500.0)):
+            ticks = nice_ticks(low, high)
+            self.assertGreaterEqual(len(ticks), 2, (low, high))
+            self.assertLess(ticks[0], ticks[-1], (low, high))
+            self.assertLessEqual(ticks[0], low, (low, high))
+            self.assertGreaterEqual(ticks[-1], high, (low, high))
+
+
+class FreshExperiment(unittest.TestCase):
+    """The real first days: no trades, no watchlist, and both accounts flat at the start."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="paper_trader_fresh_"))
+        self.ctx = AppContext(get_paths(False, self.dir))
+        self.patch = mock.patch("paper_trader.service.update_once")  # no network in tests
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.ctx.db.close()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def open_window(self):
+        try:
+            app = App(self.ctx)
+        except tk.TclError as exc:
+            self.skipTest(f"no display: {exc}")
+        errors = []
+        app.report_callback_exception = lambda exc, value, tb: errors.append(value)
+        return app, errors
+
+    def visit_every_tab(self, app):
+        for i in range(len(app.tabs)):
+            app.book.select(i)
+            app.update_idletasks()
+            app.update()
+
+    def test_opens_with_no_snapshots(self):
+        app, errors = self.open_window()
+        self.visit_every_tab(app)
+        app.close()
+        self.assertEqual(errors, [])
+
+    def test_opens_with_flat_snapshots_on_one_and_on_many_days(self):
+        for days in (0, 1, 3):
+            with self.subTest(days=days):
+                for offset in range(days + 1):
+                    self.ctx.clock.override = self.ctx.clock.__class__()() + timedelta(days=offset)
+                    take_snapshots(self.ctx.db, self.ctx.clock)
+                self.ctx.clock.override = None
+                app, errors = self.open_window()
+                self.visit_every_tab(app)
+                chart = next(t for t in app.tabs if isinstance(t, tabs.CompareTab)).chart
+                self.assertLess(chart.low, chart.high)
+                app.close()
+                self.assertEqual(errors, [])
+
+    def press_x(self, app):
+        """Run exactly what Windows runs when the window's X is clicked."""
+        app.tk.call(app.protocol("WM_DELETE_WINDOW"))
+        app.update()
+
+    def test_x_minimizes_and_keeps_the_ai_running(self):
+        app, _ = self.open_window()
+        app.update()
+        self.press_x(app)
+        self.assertEqual(app.state(), "iconic")
+        self.assertTrue(app.worker.is_alive())
+        app.deiconify()
+        app.update()
+        self.assertEqual(app.state(), "normal")
+        app.close()
+
+    def test_exit_needs_confirmation(self):
+        app, _ = self.open_window()
+        with mock.patch("paper_trader.ui.app.messagebox.askyesno", return_value=False) as ask:
+            app.exit_app()
+        ask.assert_called_once()
+        self.assertEqual(ask.call_args.kwargs["default"], "no")
+        self.assertTrue(app.worker.is_alive())
+        self.assertTrue(app.winfo_exists())
+        with mock.patch("paper_trader.ui.app.messagebox.askyesno", return_value=True):
+            app.exit_app()
+        self.assertFalse(app.worker.is_alive())
+
+    def test_dark_mode_is_the_default_switches_live_and_is_remembered(self):
+        self.assertTrue(self.ctx.settings().dark_mode)
+        app, errors = self.open_window()
+        style = ttk.Style(app)
+        chart = next(t for t in app.tabs if isinstance(t, tabs.CompareTab)).chart
+        preview = next(t for t in app.tabs if isinstance(t, dashboard.MyAccountTab)).preview_text
+        self.assertEqual(style.lookup("Treeview", "background"), common.DARK["surface"])
+        self.assertEqual(chart.cget("background"), common.DARK["surface"])
+        self.assertEqual(preview.cget("background"), common.DARK["panel"])
+
+        app.dark.set(False)
+        app.toggle_dark()
+        self.visit_every_tab(app)
+        self.assertEqual(style.lookup("Treeview", "background"), common.LIGHT["surface"])
+        self.assertEqual(chart.cget("background"), common.LIGHT["surface"])
+        self.assertEqual(preview.cget("background"), common.LIGHT["panel"])
+        self.assertFalse(self.ctx.settings().dark_mode)
+        app.close()
+        self.assertEqual(errors, [])
+
+        app, _ = self.open_window()
+        self.assertFalse(app.dark.get())
+        self.assertEqual(ttk.Style(app).lookup("Treeview", "background"), common.LIGHT["surface"])
+        app.close()
+
+    def test_version_is_shown(self):
+        app, _ = self.open_window()
+        self.assertIn(__version__, app.title())
+        app.close()
+
+    def test_one_broken_tab_does_not_stop_the_app(self):
+        with mock.patch.object(tabs.CompareTab, "refresh", side_effect=ZeroDivisionError("boom")):
+            app, _ = self.open_window()
+            self.assertIn("boom", app.state_text)
+            self.visit_every_tab(app)
+            log = self.ctx.db.conn().execute(
+                "SELECT detail FROM update_log WHERE kind = 'ui'").fetchone()
+            self.assertIn("boom", log["detail"])
+            app.close()
+
+
+class UiSmoke(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = Path(tempfile.mkdtemp(prefix="paper_trader_ui_"))
+        cls.ctx = AppContext(get_paths(True, cls.dir))
+        seed_demo(cls.ctx)
+        try:
+            cls.app = App(cls.ctx)
+        except tk.TclError as exc:
+            raise unittest.SkipTest(f"no display: {exc}")
+        cls.app.report_callback_exception = cls.record_error
+        cls.errors = []
+
+    @classmethod
+    def record_error(cls, exc, value, tb):
+        cls.errors.append(value)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.close()
+        cls.ctx.db.close()
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def tab(self, cls):
+        return next(t for t in self.app.tabs if isinstance(t, cls))
+
+    def pump(self):
+        self.app.update_idletasks()
+        self.app.update()
+
+    def test_every_tab_renders(self):
+        for i, tab in enumerate(self.app.tabs):
+            self.app.book.select(i)
+            self.pump()
+            tab.refresh()
+        self.assertEqual(self.errors, [])
+
+    def test_lessons_tab_shows_finished_trades_and_detail(self):
+        tab = self.tab(lessons_ui.LessonsTab)
+        tab.refresh()
+        rows = tab.trades.tree.get_children()
+        self.assertTrue(rows)
+        self.assertIn("finished trade", tab.summary.cget("text"))
+        tab.trades.tree.selection_set(rows[0])
+        self.pump()
+        tab.show()
+        self.assertIn("Why it sold", tab.detail.get("1.0", "end"))
+
+    def test_paper_label_is_visible(self):
+        self.assertIn("PAPER MODE", self.app.title())
+        self.assertIn("FAKE", self.app.title())
+        self.app.refresh_status()
+        self.assertIn("PAPER MODE", self.app.status.cget("text"))
+
+    def test_manual_trade_flow_through_the_window(self):
+        my = self.tab(dashboard.MyAccountTab)
+        before = load_state(self.ctx.db.conn(), "MY", self.ctx.settings()).trade_count
+        my.ticker.set("DEMA.TO")
+        my.side_var.set("BUY")
+        my.quantity.set("1")
+        my.reason.set("UI test")
+        my.client_id = "ui-test-1"
+        self.ctx.engine  # same engine the window uses
+        from paper_trader.service import refresh_one
+        refresh_one(self.ctx, "DEMA.TO")
+        with mock.patch.object(dashboard, "show_info") as info, \
+                mock.patch.object(dashboard, "show_error") as error:
+            my.show_preview()
+            self.assertIn("Simulated fill", my.preview_text.get("1.0", "end"))
+            my.record()
+            error.assert_not_called()
+            info.assert_called_once()
+        after = load_state(self.ctx.db.conn(), "MY", self.ctx.settings()).trade_count
+        self.assertEqual(after, before + 1)
+
+    def test_rejected_trade_shows_a_clear_message(self):
+        my = self.tab(dashboard.MyAccountTab)
+        my.ticker.set("DEMA.TO")
+        my.side_var.set("BUY")
+        my.quantity.set("999999")
+        my.show_preview()
+        self.assertIn("Not allowed", my.preview_text.get("1.0", "end"))
+        self.assertEqual(str(my.record_button.cget("state")), "disabled")
+
+    def test_ai_switch_saves(self):
+        ai = self.tab(dashboard.AiAccountTab)
+        ai.ai_on.set(False)
+        ai.save()
+        self.assertFalse(self.ctx.settings().ai_enabled)
+        ai.ai_on.set(True)
+        ai.save()
+        self.assertTrue(self.ctx.settings().ai_enabled)
+
+    def test_watchlist_validation_and_add_remove(self):
+        tab = self.tab(tabs.WatchlistTab)
+        tab.ticker.set("not a ticker!")
+        with mock.patch.object(tabs, "show_error") as error:
+            tab.add()
+            error.assert_called_once()
+        tab.ticker.set("GOOG")
+        with mock.patch.object(tabs, "show_error") as error:
+            tab.add()
+            self.assertIn("GOOG.TO", error.call_args.args[1])
+        self.assertFalse(tab.table.tree.exists("GOOG"))
+        tab.ticker.set("zzz.to")
+        tab.add()
+        self.assertTrue(tab.table.tree.exists("ZZZ.TO"))
+        tab.table.tree.selection_set("ZZZ.TO")
+        tab.remove()
+        self.assertFalse(tab.table.tree.exists("ZZZ.TO"))
+
+    def test_trade_log_filters(self):
+        tab = self.tab(tabs.TradeLogTab)
+        tab.account.set("AI account")
+        tab.side.set("BUY")
+        tab.refresh()
+        values = [tab.table.tree.item(i, "values") for i in tab.table.tree.get_children()]
+        self.assertTrue(values)
+        self.assertTrue(all(v[1] == "AI account" and v[3] == "BUY" for v in values))
+        tab.date_from.set("bad")
+        with mock.patch.object(tabs, "show_error") as error:
+            tab.apply()
+            error.assert_called_once()
+        tab.date_from.set("")
+        tab.account.set("All")
+        tab.side.set("All")
+
+    def test_settings_rejects_bad_input_and_saves_good(self):
+        tab = self.tab(admin.SettingsTab)
+        tab.refresh()
+        tab.vars["max_trade_size"].set("oops")
+        with mock.patch.object(admin, "show_error") as error:
+            tab.save()
+            error.assert_called_once()
+        tab.vars["max_trade_size"].set("750")
+        tab.vars["max_daily_buys"].set("4")
+        with mock.patch.object(admin, "show_info"):
+            tab.save()
+        s = self.ctx.settings()
+        self.assertEqual((D(s.max_trade_size), s.max_daily_buys), (D("750"), 4))
+
+    def test_reset_requires_typed_confirmation(self):
+        tab = self.tab(admin.AboutTab)
+        count = self.ctx.db.conn().execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+        with mock.patch.object(admin.messagebox, "askyesnocancel", return_value=False), \
+                mock.patch.object(admin.simpledialog, "askstring", return_value="reset"), \
+                mock.patch.object(admin, "show_info") as info:
+            tab.reset()
+            info.assert_called_once_with(tab, "Nothing was changed.")
+        self.assertEqual(self.ctx.db.conn().execute("SELECT COUNT(*) FROM trades").fetchone()[0], count)
+
+
+if __name__ == "__main__":
+    unittest.main()

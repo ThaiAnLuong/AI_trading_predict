@@ -1,0 +1,2 @@
+# The app itself needs no packages. This is only for the optional LLM reviewer.
+anthropic
