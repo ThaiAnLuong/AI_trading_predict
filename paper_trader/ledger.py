@@ -90,6 +90,29 @@ def replay(starting_cash: Decimal, trades: Iterable[Mapping]) -> AccountState:
     return state
 
 
+def realized_by_sale(starting_cash: Decimal, trades: Iterable[Mapping]) -> dict[int, tuple[Decimal, str]]:
+    """Gain or loss locked in by each sale, with its currency.
+
+    Trading sales are in CAD. Imported-holding sales stay in their own currency.
+    """
+    state = AccountState(cash=starting_cash)
+    result = {}
+    for t in trades:
+        if t["side"] != "SELL":
+            apply_trade(state, t)
+            continue
+        if t["sleeve"] == "IMPORTED":
+            currency = t["currency"]
+            before = state.imported_realized.get(currency, ZERO)
+            apply_trade(state, t)
+            result[t["id"]] = (state.imported_realized[currency] - before, currency)
+        else:
+            before = state.realized
+            apply_trade(state, t)
+            result[t["id"]] = (state.realized - before, "CAD")
+    return result
+
+
 def period_used(trades: Iterable[Mapping], start: datetime) -> Decimal:
     """Net money newly deployed since `start`.
 

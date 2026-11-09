@@ -14,9 +14,10 @@ from ..performance import ACCOUNT_LABELS, comparison, matched_series
 from ..settings import save_settings
 from ..symbols import cad_only_message, currency_for, normalize_ticker
 from ..timeutil import local_str, to_iso
-from ..valuation import load_quotes, quote_status
+from ..valuation import load_quotes, load_state, load_trades, quote_status
 from .chart import ValueChart
-from .common import Table, show_error, show_info, text_box
+from ..ledger import realized_by_sale
+from .common import Table, show_error, show_info, sign_tag, text_box
 
 
 def details_box(parent, height=8) -> tk.Text:
@@ -39,11 +40,13 @@ class WatchlistTab(ttk.Frame):
         ttk.Label(self, text="Watchlist", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(self, text="The AI only considers these tickers and anything it already holds. "
                   "TSX: RY.TO.  Canadian version of a US company (CDR): GOOG.TO.  "
-                  "TSX Venture: ABC.V.  Cboe Canada: GOOG.NE.", style="Muted.TLabel").grid(
+                  "TSX Venture: ABC.V.  Cboe Canada: GOOG.NE.  Yellow rows: held by the AI account.",
+                  style="Muted.TLabel").grid(
             row=1, column=0, sticky="w", pady=(0, 6))
-        self.table = Table(self, [("Ticker", 90), ("Company name", 170), ("Price", 90), ("Ccy", 45),
-                                  ("Exchange", 80), ("Price time", 125), ("Data", 130),
-                                  ("Source and timing", 300), ("Slippage", 80)], height=14)
+        self.table = Table(self, [("Ticker", 90), ("Company name", 170), ("AI holds", 65),
+                                  ("Price", 90), ("Ccy", 45), ("Exchange", 80), ("Price time", 125),
+                                  ("Data", 130), ("Source and timing", 300), ("Slippage", 80)],
+                           height=14)
         self.table.grid(row=2, column=0, sticky="nsew")
         self.table.on_select(self.selected)
 
@@ -68,18 +71,20 @@ class WatchlistTab(ttk.Frame):
         s = self.ctx.settings()
         now = self.ctx.clock()
         quotes = load_quotes(conn)
+        ai_held = set(load_state(conn, "AI", s).positions)
         rows = []
         for w in conn.execute("SELECT * FROM watchlist ORDER BY ticker"):
             t = w["ticker"]
             q = quotes.get(t)
+            held = t in ai_held
             rows.append((t, (
-                t, w["name"], fmt_price(q["price"]) if q is not None else "n/a",
+                t, w["name"], "yes" if held else "", fmt_price(q["price"]) if q is not None else "n/a",
                 currency_for(t), (q["exchange"] if q is not None else None) or "?",
                 local_str(q["quote_ts"]) if q is not None else "never",
                 quote_status(q, s, now),
                 (f"{q['source'] or ''} - {q['delay_note'] or ''}" if q is not None and q["source"]
                  else "no data yet"),
-                s.ticker_categories.get(t, s.default_category))))
+                s.ticker_categories.get(t, s.default_category)), "held" if held else ""))
         self.table.set_rows(rows)
         self.category_box["values"] = sorted(s.slippage_categories)
         problems = [f"{t}: {q['error']}" for t, q in quotes.items()
@@ -157,7 +162,8 @@ class TradeLogTab(ttk.Frame):
         self.table = Table(self, [("Time", 125), ("Account", 80), ("By", 65), ("Action", 60),
                                   ("Ticker", 80), ("Qty", 60), ("Ccy", 40), ("Reference", 85),
                                   ("Sim fill", 85), ("USD/CAD", 65), ("Cash CAD", 90),
-                                  ("Group", 75), ("Flags", 55), ("Reason", 240)], height=16)
+                                  ("Realized", 100), ("Group", 75), ("Flags", 55), ("Reason", 220)],
+                           height=16)
         self.table.grid(row=2, column=0, sticky="nsew")
         self.count = ttk.Label(self, style="Muted.TLabel")
         self.count.grid(row=3, column=0, sticky="w")
@@ -181,16 +187,27 @@ class TradeLogTab(ttk.Frame):
             where, args = self.filter()
         except ValueError:
             return  # a half-typed date: keep the current rows until Apply is pressed
-        rows = self.ctx.db.conn().execute(
+        conn = self.ctx.db.conn()
+        start = self.ctx.settings().start
+        realized = {}
+        for account in ACCOUNT_LABELS:  # sale results need each account's full history
+            realized.update(realized_by_sale(start, load_trades(conn, account)))
+        rows = conn.execute(
             f"SELECT * FROM trades {where} ORDER BY id DESC LIMIT 2000", args).fetchall()
-        self.table.set_rows([(str(r["id"]), (
-            local_str(r["ts"]), ACCOUNT_LABELS[r["account"]], r["source"], r["side"], r["ticker"],
-            fmt_qty(r["quantity"]), r["currency"], fmt_price(r["reference_price"]),
-            fmt_price(r["fill_price"]), r["fx_rate"] or "-",
-            r["cash_delta"] if r["sleeve"] == "TRADING" else "none",
-            "Imported" if r["sleeve"] == "IMPORTED" else "Trading",
-            "STALE" if r["quote_stale"] else "", r["reason"])) for r in rows])
-        self.count.configure(text=f"{len(rows)} entries shown")
+        table_rows = []
+        for r in rows:
+            gain, currency = realized.get(r["id"], (None, ""))
+            table_rows.append((str(r["id"]), (
+                local_str(r["ts"]), ACCOUNT_LABELS[r["account"]], r["source"], r["side"], r["ticker"],
+                fmt_qty(r["quantity"]), r["currency"], fmt_price(r["reference_price"]),
+                fmt_price(r["fill_price"]), r["fx_rate"] or "-",
+                r["cash_delta"] if r["sleeve"] == "TRADING" else "none",
+                fmt_signed(gain, currency) if gain is not None else "",
+                "Imported" if r["sleeve"] == "IMPORTED" else "Trading",
+                "STALE" if r["quote_stale"] else "", r["reason"]), sign_tag(gain)))
+        self.table.set_rows(table_rows)
+        self.count.configure(text=f"{len(rows)} entries shown.  Green: sale at a profit.  "
+                                  "Red: sale at a loss.  Buys are not coloured.")
 
     def export(self) -> None:
         try:

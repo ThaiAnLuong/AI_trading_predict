@@ -16,13 +16,24 @@ LIGHT = {
     "ink": "#1f1f1e", "muted": "#5a5956", "disabled": "#9a9994", "grid": "#e4e3df",
     "border": "#c8c7c2", "select": "#cfe1f7", "button": "#e7e6e1", "button_active": "#dcdbd6",
     "warn": "#8a4b00", "my": "#2a78d6", "ai": "#eb6834",
+    # Soft row tints: the text keeps its normal colour, so it stays readable.
+    "gain_bg": "#e2f3e5", "loss_bg": "#fbe4e4", "held_bg": "#fbf3c8",
 }
 DARK = {
     "bg": "#1f1f1e", "surface": "#1a1a19", "field": "#2a2a28", "panel": "#262624",
     "ink": "#f0efec", "muted": "#c3c2b7", "disabled": "#7d7c76", "grid": "#3a3a37",
     "border": "#4a4a46", "select": "#2f5f9e", "button": "#33332f", "button_active": "#42423d",
     "warn": "#f0b35c", "my": "#3987e5", "ai": "#d95926",
+    "gain_bg": "#1f3326", "loss_bg": "#3f2326", "held_bg": "#3b3720",
 }
+ROW_TAGS = {"gain": "gain_bg", "loss": "loss_bg", "held": "held_bg"}
+
+
+def sign_tag(value) -> str:
+    """'gain' for above zero, 'loss' for below, nothing for zero or unknown."""
+    if value is None or value == 0:
+        return ""
+    return "gain" if value > 0 else "loss"
 _palette = DARK
 
 
@@ -121,13 +132,20 @@ class Table(ttk.Frame):
         bar.grid(row=0, column=1, sticky="ns")
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
+        self.retheme()
 
-    def set_rows(self, rows: list[tuple[str, tuple]]) -> None:
-        """rows: (stable id, values)."""
+    def retheme(self) -> None:
+        c = colors()
+        for tag, key in ROW_TAGS.items():
+            self.tree.tag_configure(tag, background=c[key])
+
+    def set_rows(self, rows: list[tuple]) -> None:
+        """rows: (stable id, values) or (stable id, values, row tag such as 'gain')."""
         selected = self.selected()
         self.tree.delete(*self.tree.get_children())
-        for iid, values in rows:
-            self.tree.insert("", "end", iid=iid, values=values)
+        for iid, values, *tag in rows:
+            tags = (tag[0],) if tag and tag[0] else ()
+            self.tree.insert("", "end", iid=iid, values=values, tags=tags)
         if selected and self.tree.exists(selected):
             self.tree.selection_set(selected)
 

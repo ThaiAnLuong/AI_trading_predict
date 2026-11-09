@@ -28,6 +28,9 @@ the app is closed, AI trading, price updates and snapshots stop.
 Versions are numbered `A.B.C`: **A** for a major change, **B** for a change to a function, method or
 calculation, and **C** for UX/UI and quality work.
 
+- **1.1.1:** coloured rows. Holdings are green in profit and red at a loss. In the trade log, sales
+  are green or red by their gain, with a new Realized column. In the watchlist, tickers the AI
+  account holds are yellow, with an "AI holds" column.
 - **1.1.0:** API keys moved to the `source API` folder, and a `PUBLIC` folder for GitHub.
 - **1.0.1:** dark mode, and the X button minimizes instead of closing, with a new Exit app button.
 - **1.0.0:** first release.

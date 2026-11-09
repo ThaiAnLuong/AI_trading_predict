@@ -192,6 +192,79 @@ class UiSmoke(unittest.TestCase):
             tab.refresh()
         self.assertEqual(self.errors, [])
 
+    def tags_by_value(self, table, column):
+        tree = table.tree
+        position = list(tree["columns"]).index(column)
+        return [(tree.item(i, "values")[position], tree.item(i, "tags")) for i in tree.get_children()]
+
+    def check_sign_colours(self, pairs):
+        for value, tags in pairs:
+            text = str(value)
+            if text.startswith("+") and text.strip("+0.,CAD ") != "":
+                self.assertEqual(tuple(tags), ("gain",), value)
+            elif text.startswith("-"):
+                self.assertEqual(tuple(tags), ("loss",), value)
+            else:
+                self.assertEqual(tuple(tags or ()), (), value)
+
+    def test_holdings_rows_are_green_or_red_by_gain(self):
+        for cls in (dashboard.MyAccountTab, dashboard.AiAccountTab):
+            tab = self.tab(cls)
+            tab.refresh()
+            self.check_sign_colours(self.tags_by_value(tab.holdings, "Unrealized CAD"))
+        my = self.tab(dashboard.MyAccountTab)
+        pairs = self.tags_by_value(my.holdings, "Unrealized CAD")
+        self.assertTrue(any(tags for _, tags in pairs), "demo should have a coloured holding")
+        self.check_sign_colours(self.tags_by_value(my.imported, "Unrealized (own ccy)"))
+
+    def test_trade_log_colours_sales_only(self):
+        tab = self.tab(tabs.TradeLogTab)
+        tab.refresh()
+        tree = tab.table.tree
+        action = list(tree["columns"]).index("Action")
+        coloured = 0
+        for iid in tree.get_children():
+            values, tags = tree.item(iid, "values"), tree.item(iid, "tags")
+            if values[action] != "SELL":
+                self.assertFalse(tags, values)
+            else:
+                coloured += bool(tags)
+        self.assertGreater(coloured, 0)
+        self.check_sign_colours(self.tags_by_value(tab.table, "Realized"))
+
+    def test_watchlist_marks_what_the_ai_holds(self):
+        s = self.ctx.settings()
+        s.max_daily_buys, s.max_positions = 99, 99
+        from paper_trader.settings import save_settings
+        save_settings(self.ctx.db, s, self.ctx.clock)
+        from paper_trader.engine import TradeRejected, TradeRequest
+        from paper_trader.service import refresh_one
+        refresh_one(self.ctx, "DEMB.TO")
+        try:
+            self.ctx.engine.submit(TradeRequest("AI", "AI", "BUY", "DEMB.TO", 1, "UI test"))
+        except TradeRejected as exc:
+            if exc.code != "DUPLICATE":
+                raise
+        tab = self.tab(tabs.WatchlistTab)
+        tab.refresh()
+        tree = tab.table.tree
+        held = list(tree["columns"]).index("AI holds")
+        from paper_trader.valuation import load_state
+        ai = set(load_state(self.ctx.db.conn(), "AI", self.ctx.settings()).positions)
+        self.assertIn("DEMB.TO", ai)
+        for iid in tree.get_children():
+            expected = ("held",) if iid in ai else ()
+            self.assertEqual(tuple(tree.item(iid, "tags") or ()), expected, iid)
+            self.assertEqual(tree.item(iid, "values")[held], "yes" if iid in ai else "")
+
+    def test_row_colours_follow_the_theme(self):
+        table = self.tab(tabs.TradeLogTab).table
+        for dark, palette in ((False, common.LIGHT), (True, common.DARK)):
+            self.app.dark.set(dark)
+            self.app.toggle_dark()
+            for tag, key in common.ROW_TAGS.items():
+                self.assertEqual(str(table.tree.tag_configure(tag, "background")), palette[key])
+
     def test_lessons_tab_shows_finished_trades_and_detail(self):
         tab = self.tab(lessons_ui.LessonsTab)
         tab.refresh()

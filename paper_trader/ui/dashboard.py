@@ -14,7 +14,7 @@ from ..settings import save_settings
 from ..symbols import normalize_ticker
 from ..timeutil import local_str, to_local
 from ..valuation import account_view, budget, imported_views
-from .common import Table, Tile, form_row, show_error, show_info, text_box
+from .common import Table, Tile, form_row, show_error, show_info, sign_tag, text_box
 
 HOLDING_COLUMNS = [("Ticker", 90), ("Qty", 60), ("Ccy", 45), ("Avg cost", 85), ("Ref price", 85),
                    ("Exchange", 80), ("Price time", 125), ("Data", 130), ("Value CAD", 100),
@@ -55,6 +55,8 @@ class AccountTab(ttk.Frame):
         body.rowconfigure(1, weight=1)
         self.warning = ttk.Label(body, style="Warn.TLabel")
         self.warning.grid(row=0, column=0, sticky="w")
+        ttk.Label(body, text="Green rows: in profit.  Red rows: at a loss.",
+                  style="Muted.TLabel").grid(row=0, column=0, sticky="e")
         self.holdings = Table(body, HOLDING_COLUMNS, height=6)
         self.holdings.grid(row=1, column=0, sticky="nsew")
         self.build_extra(body)
@@ -95,8 +97,8 @@ class AccountTab(ttk.Frame):
             h.ticker, fmt_qty(h.quantity), h.currency, fmt_price(h.avg_cost), fmt_price(h.price),
             h.exchange or "?", local_str(h.quote_ts), h.status,
             f"{h.market_value:,.2f}" if h.market_value is not None else "n/a",
-            f"{h.unrealized:+,.2f}" if h.unrealized is not None else "n/a"))
-            for h in view.holdings])
+            f"{h.unrealized:+,.2f}" if h.unrealized is not None else "n/a"),
+            sign_tag(h.unrealized)) for h in view.holdings])
         return view
 
 
@@ -166,8 +168,8 @@ class MyAccountTab(AccountTab):
         self.imported.set_rows([(h.ticker, (
             h.ticker, fmt_qty(h.quantity), h.currency, fmt_price(h.avg_cost), fmt_price(h.price),
             f"{h.market_value:,.2f}" if h.market_value is not None else "n/a",
-            f"{h.unrealized:+,.2f}" if h.unrealized is not None else "n/a", h.status))
-            for h in rows])
+            f"{h.unrealized:+,.2f}" if h.unrealized is not None else "n/a", h.status),
+            sign_tag(h.unrealized)) for h in rows])
         realized = ", ".join(fmt_signed(v, c) for c, v in view.state.imported_realized.items())
         proceeds = ", ".join(fmt_money(v, c) for c, v in view.state.imported_proceeds.items())
         self.imported_note.configure(

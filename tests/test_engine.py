@@ -86,6 +86,31 @@ class CashRules(Base):
         self.rejected("BAD_QUANTITY", self.buy, qty="0.00001")
 
 
+class RealizedBySale(Base):
+    def setUp(self):
+        super().setUp()
+        self.settings(default_category="zero", slippage_categories={
+            "zero": {"mode": "abs", "value": "0"}})
+
+    def test_each_sale_gets_its_own_result(self):
+        from paper_trader.ledger import realized_by_sale
+        from paper_trader.valuation import load_trades
+        self.quote("RY.TO", "100")
+        self.buy(qty=10)
+        self.quote("RY.TO", "120")
+        win = self.sell(qty=4)
+        self.quote("RY.TO", "90")
+        loss = self.sell(qty=6)
+        self.engine.import_holding("TD.TO", 5, "50")
+        self.quote("TD.TO", "40")
+        imported = self.sell("TD.TO", 5, sleeve="IMPORTED")
+        result = realized_by_sale(D("10000"), load_trades(self.db.conn(), "MY"))
+        self.assertEqual(result, {win: (D("80"), "CAD"), loss: (D("-60"), "CAD"),
+                                  imported: (D("-50"), "CAD")})
+        trading = sum(v for k, (v, _) in result.items() if k != imported)
+        self.assertEqual(trading, self.state().realized)
+
+
 class PeriodLimit(Base):
     def setUp(self):
         super().setUp()
