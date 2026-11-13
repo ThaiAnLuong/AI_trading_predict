@@ -9,7 +9,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -101,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_decisions_ts ON ai_decisions(ts);
 CREATE TABLE IF NOT EXISTS ai_plans (
     ticker TEXT PRIMARY KEY, ts TEXT NOT NULL, plan TEXT NOT NULL, target TEXT NOT NULL,
     stop TEXT NOT NULL, trailing INTEGER NOT NULL DEFAULT 0, add_at TEXT,
-    why TEXT NOT NULL DEFAULT '', price TEXT, currency TEXT);
+    why TEXT NOT NULL DEFAULT '', price TEXT, currency TEXT, news TEXT NOT NULL DEFAULT '');
 
 -- Sectors you chose on the Watchlist tab (version 4). Others use the built-in list.
 CREATE TABLE IF NOT EXISTS ticker_sectors (ticker TEXT PRIMARY KEY, sector TEXT NOT NULL);
@@ -145,6 +145,9 @@ class Database:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(quotes)")}
         if "end_of_day" not in columns:  # databases created by version 1
             conn.execute("ALTER TABLE quotes ADD COLUMN end_of_day INTEGER NOT NULL DEFAULT 0")
+        plan_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ai_plans)")}
+        if "news" not in plan_columns:  # databases created before 1.4.0
+            conn.execute("ALTER TABLE ai_plans ADD COLUMN news TEXT NOT NULL DEFAULT ''")
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
                      (str(SCHEMA_VERSION),))
 

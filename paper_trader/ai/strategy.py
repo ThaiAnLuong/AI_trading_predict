@@ -1,7 +1,8 @@
 """The default AI-account strategy: transparent rules, not a prediction engine.
 
-Price data decides whether a trade is even considered. News can raise confidence or
-veto a buy, but no news item can start a trade by itself. Nothing here claims an edge;
+Price data decides whether a trade is even considered. News is counted as good against bad
+votes (sector news at half weight): the bigger side wins and a tie is neutral. Positive news
+raises confidence, Negative news blocks a buy, and no news item can start a trade by itself. Nothing here claims an edge;
 finding out how this does against you is the point of the experiment.
 
 Every holding also gets a plan: hold or sell soon (with a rough number of trading days),
@@ -11,15 +12,15 @@ numbers come from the same fixed rules; they are not forecasts.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 from ..ledger import Position
 from ..money import D
-from ..news.signals import Signal
+from ..news.signals import Signal, tally, voting
 
 MIN_BARS = 50
-NAME = "momentum+news rules v2"
+NAME = "momentum+news rules v3"
 REWARD_RISK = Decimal(2)          # the target sits twice as far above cost as the stop sits below
 MAX_ADDS = 1                      # buy more at most once per holding
 ADD_BAND = Decimal("1.01")        # "buy more" zone: up to 1% above the 20-day average
@@ -27,6 +28,8 @@ REENTRY_DAYS = 3                  # no new buy of a ticker within this many days
 SELL_SOON_GAP = Decimal("0.02")   # within 2% of the stop counts as "sell soon"
 MAX_DAYS = 60                     # longer time estimates are shown as "N+ days"
 CENTS = Decimal("0.01")
+NEWS_STEP = 0.05                  # confidence added per vote of lead when news is Positive ...
+NEWS_MAX = 0.15                   # ... up to this much
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,7 @@ class Plan:
     trailing: bool            # True when a higher price has raised the stop
     add_at: Decimal | None    # buy more at or below this, only while the uptrend holds
     why: str
+    news: str = ""            # the news score when the plan was made, e.g. "Positive (6/4, +2)"
 
     def label(self) -> str:
         if self.days_low is None:
@@ -69,7 +73,8 @@ class Plan:
 
     def as_dict(self) -> dict:
         return {"plan": self.label(), "target": str(self.target), "stop": str(self.stop),
-                "trailing_stop": self.trailing, "add_at": _s(self.add_at), "why": self.why}
+                "trailing_stop": self.trailing, "add_at": _s(self.add_at), "why": self.why,
+                "news": self.news}
 
     def short(self) -> str:
         parts = [self.label(), f"target {self.target}", f"stop {self.stop}"]
@@ -192,9 +197,11 @@ class MomentumNewsStrategy(Strategy):
 
         price = float(data.price)
         m = compute_metrics(price, data.closes, data.volumes)
-        negative = [x for x in data.signals if x.direction < 0]
-        plan = make_plan(data.price, pos.avg_cost, data.peak, pct, data.closes, m,
-                         data.buys_since_open <= MAX_ADDS)
+        news = tally(data.signals)
+        votes = voting(data.signals)
+        bad_news = news.status == "Negative"
+        plan = replace(make_plan(data.price, pos.avg_cost, data.peak, pct, data.closes, m,
+                                 data.buys_since_open <= MAX_ADDS), news=news.label())
 
         if data.price >= plan.target:
             return Proposal("SELL", f"Target reached: price {data.price} is at or above the sell "
@@ -203,8 +210,8 @@ class MomentumNewsStrategy(Strategy):
         fast_drop = below and m["momentum_5d_pct"] < -2
         slow_slide = below and m["sma20"] < m["sma20_5d_ago"] and m["momentum_20d_pct"] < 0
         if fast_drop or slow_slide:
-            confidence = 0.65 if negative else 0.6
-            note = f" {len(negative)} negative unverified signal(s) noted." if negative else ""
+            confidence = 0.65 if bad_news else 0.6
+            note = f" News {news.label()}." if bad_news else ""
             if fast_drop:
                 why = (f"Trend exit: price is below its 20-day average and down "
                        f"{abs(m['momentum_5d_pct'])}% over 5 days.")
@@ -212,14 +219,15 @@ class MomentumNewsStrategy(Strategy):
                 why = (f"Trend exit (slow slide): price is below its 20-day average, the average "
                        f"itself is falling, and the price is down {abs(m['momentum_20d_pct'])}% "
                        f"over 20 days.")
-            return Proposal("SELL", why + note, confidence, m, negative, plan)
+            return Proposal("SELL", why + note, confidence, m, votes if bad_news else [], plan)
 
         if plan.add_at is not None and pos.avg_cost <= data.price <= plan.add_at:
-            if negative:
-                return Proposal("HOLD", "Buy more vetoed: recent negative unverified signal.",
-                                None, m, negative, plan)
+            if bad_news:
+                return Proposal("HOLD", f"Buy more vetoed: news {news.label()}.",
+                                None, m, votes, plan)
             return Proposal("BUY", f"Buy more: the uptrend holds and the price pulled back to "
-                            f"{data.price}, within 1% of its 20-day average.", 0.55, m, plan=plan)
+                            f"{data.price}, within 1% of its 20-day average. News "
+                            f"{news.label()}.", 0.55, m, votes, plan)
         return Proposal("HOLD", "Holding: no exit condition met.", None, m, plan=plan)
 
     def _entry(self, data: TickerInput) -> Proposal:
@@ -227,27 +235,28 @@ class MomentumNewsStrategy(Strategy):
             return Proposal("HOLD", f"Fewer than {MIN_BARS} days of price history.")
         price = float(data.price)
         m = compute_metrics(price, data.closes, data.volumes)
-        negative = [x for x in data.signals if x.direction < 0]
-        positive = [x for x in data.signals if x.direction > 0]
+        news = tally(data.signals)
+        votes = voting(data.signals)
 
         if not is_uptrend(price, m):
             return Proposal("HOLD", "No entry: price trend conditions not met.", None, m)
         if data.days_since_sell is not None and data.days_since_sell < REENTRY_DAYS:
             return Proposal("HOLD", f"No entry: sold less than {REENTRY_DAYS} days ago.", None, m)
-        if negative:
-            return Proposal("HOLD", "Entry vetoed: recent negative unverified signal.", None, m,
-                            negative)
+        if news.status == "Negative":
+            return Proposal("HOLD", f"Entry vetoed: news {news.label()}.", None, m, votes)
         confidence = 0.55
         reasons = [f"Price is above its 20-day and 50-day averages, up "
                    f"{m['momentum_20d_pct']}% over 20 days"]
         if m.get("volume_vs_20d", 0) > 1.2:
             confidence += 0.05
             reasons.append(f"latest volume is {m['volume_vs_20d']}x its 20-day average")
-        if positive:
-            confidence += min(0.05 * len(positive), 0.15)
-            reasons.append(f"{len(positive)} supporting unverified news signal(s)")
-        plan = make_plan(data.price, data.price, None, data.stop_loss_pct, data.closes, m, True)
-        return Proposal("BUY", "; ".join(reasons) + ".", round(confidence, 2), m, positive, plan)
+        if news.status == "Positive":
+            confidence += min(NEWS_STEP * news.net, NEWS_MAX)
+        if votes:
+            reasons.append(f"news {news.label()}")
+        plan = replace(make_plan(data.price, data.price, None, data.stop_loss_pct, data.closes, m,
+                                 True), news=news.label())
+        return Proposal("BUY", "; ".join(reasons) + ".", round(confidence, 2), m, votes, plan)
 
 
 def to_float(values) -> list[float]:

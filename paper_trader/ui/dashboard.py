@@ -346,14 +346,15 @@ def describe(plan: TradePlan) -> str:
     return "\n".join(lines)
 
 
-PLAN_COLUMNS = [("Ticker", 90), ("Plan", 150), ("Sell target", 85), ("Stop", 105),
-                ("Buy more at", 90), ("Ref price", 85), ("Plan time", 125), ("Why", 340)]
+PLAN_COLUMNS = [("Ticker", 90), ("Plan", 150), ("News", 150), ("Sell target", 85),
+                ("Stop", 105), ("Buy more at", 90), ("Ref price", 85), ("Plan time", 125),
+                ("Why", 300)]
 
 
 def plan_rows(rows, held) -> list[tuple]:
     """Table rows for the AI plans of tickers still held. Sell-soon rows are red."""
     return [(r["ticker"], (
-        r["ticker"], r["plan"], r["target"],
+        r["ticker"], r["plan"], r["news"] or "-", r["target"],
         r["stop"] + (" (raised)" if r["trailing"] else ""),
         r["add_at"] or "not now",
         bold_num(fmt_price(r["price"])) if r["price"] else "n/a",

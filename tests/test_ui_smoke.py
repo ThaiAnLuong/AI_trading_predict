@@ -318,18 +318,19 @@ class UiSmoke(unittest.TestCase):
 
     def test_plan_rows(self):
         base = {"ts": "2026-11-10T15:00:00.000000Z", "target": "12.00", "stop": "9.00",
-                "trailing": 1, "add_at": None, "why": "test", "price": "10", "currency": "CAD"}
-        rows = [dict(base, ticker="A.TO", plan="Sell soon (1-3 days)"),
+                "trailing": 1, "add_at": None, "why": "test", "price": "10", "currency": "CAD", "news": ""}
+        rows = [dict(base, ticker="A.TO", plan="Sell soon (1-3 days)", news="Negative (1/3, -2)"),
                 dict(base, ticker="B.TO", plan="Hold (2-5 days)", trailing=0, add_at="9.50"),
                 dict(base, ticker="GONE.TO", plan="Hold (2-5 days)")]
         out = {iid: (values, tag) for iid, values, tag in dashboard.plan_rows(rows, {"A.TO", "B.TO"})}
         self.assertEqual(set(out), {"A.TO", "B.TO"})  # sold tickers are not shown
         values, tag = out["A.TO"]
-        self.assertEqual((values[1], values[3], values[4], tag),
-                         ("Sell soon (1-3 days)", "9.00 (raised)", "not now", "loss"))
+        self.assertEqual((values[1], values[2], values[4], values[5], tag),
+                         ("Sell soon (1-3 days)", "Negative (1/3, -2)", "9.00 (raised)", "not now",
+                          "loss"))
         values, tag = out["B.TO"]
-        self.assertEqual((values[3], values[4], tag), ("9.00", "9.50", ""))
-        self.assertEqual(common.plain_num(values[5]), "10.0000")
+        self.assertEqual((values[2], values[4], values[5], tag), ("-", "9.00", "9.50", ""))
+        self.assertEqual(common.plain_num(values[6]), "10.0000")
 
     def test_ai_tab_shows_plans_only_for_holdings(self):
         tab = self.tab(dashboard.AiAccountTab)
@@ -417,7 +418,7 @@ class UiSmoke(unittest.TestCase):
         tip.hide()
         self.assertIsNone(tip.pending)
 
-    def test_press_and_hold_shows_the_whole_row(self):
+    def test_hover_on_selected_row_shows_the_whole_row(self):
         tab = self.tab(tabs.TradeLogTab)
         tab.refresh()
         table = tab.table
@@ -431,18 +432,31 @@ class UiSmoke(unittest.TestCase):
             self.assertTrue(line.split(":", 1)[1].strip(), line)
         table.close_peek()
         self.assertIsNone(table.peek)
-        # A quick click (released before the wait) never opens it.
         class Event:
             x, y, x_root, y_root = 5, 5, 100, 100
         table.tree.see(row)
         self.pump()
-        bbox = table.tree.bbox(row)
-        Event.y = bbox[1] + 2
-        table.on_press(Event)
-        self.assertIsNotNone(table.pending)
-        table.close_peek()
+        Event.y = table.tree.bbox(row)[1] + 2
+        # Resting on a row that is not selected does nothing.
+        table.tree.selection_remove(*table.tree.selection())
+        table.on_hover(Event)
         self.assertIsNone(table.pending)
+        # Resting on the selected row waits, then opens.
+        table.tree.selection_set(row)
+        table.on_hover(Event)
+        self.assertIsNotNone(table.pending)
+        table.tree.after_cancel(table.pending)
+        table.open_peek(row, 100, 100)
+        self.assertIsNotNone(table.peek)
+        # A click closes it, and it stays shut while the mouse stays on that row.
+        table.on_press(Event)
         self.assertIsNone(table.peek)
+        table.on_hover(Event)
+        self.assertIsNone(table.pending)
+        # Moving off the rows resets it.
+        Event.y = 10_000
+        table.on_hover(Event)
+        self.assertIsNone(table.peek_row)
 
     def test_row_colours_follow_the_theme(self):
         table = self.tab(tabs.TradeLogTab).table

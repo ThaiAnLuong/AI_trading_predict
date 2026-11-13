@@ -28,7 +28,16 @@ the app is closed, AI trading, price updates and snapshots stop.
 Versions are numbered `A.B.C`: **A** for a major change, **B** for a change to a function, method or
 calculation, and **C** for UX/UI and quality work.
 
-- **1.3.2:** press and hold any table row to read all of it, including long reasons, in a pop-up. Let go to close it.
+- **1.4.0:** the AI decides on the news by majority vote, not one headline.
+  - It counts good and bad headlines: about the stock itself, from market links, and from other
+    stocks in the same sector (half weight). The bigger side wins and a tie is neutral, shown
+    as a score such as **Positive (6/4, +2)**, **Neutral (5/5, 0)** or **Negative (3/11, -8)**.
+  - Negative blocks a buy or buy-more. Positive raises confidence by 0.05 per vote of lead, up
+    to +0.15. Neutral or no news leaves the decision to price. News still never starts a trade,
+    and sells are still decided by price.
+  - The score shows in AI decision reasons, a News column in the AI plan table and an "All news
+    score" column in Market links. Strategy name is now `momentum+news rules v3`.
+- **1.3.2:** to read a whole table row, including long reasons, select it, then rest the mouse on it for half a second. The pop-up closes when the mouse moves off the row or you click.
 - **1.3.1:** a "?" next to every setting. Hover over it (or click it) for a short note on what the setting does.
 - **1.3.0:** sectors, market links and gain by ticker.
   - Every stock has a sector, shown in both accounts and the watchlist and changeable there.
@@ -236,7 +245,7 @@ last 5 days is available. If you turn the setting back on, existing US positions
 
 ## AI strategy
 
-The AI account runs `momentum+news rules v2` (since 1.2.0), a transparent rules-based strategy in
+The AI account runs `momentum+news rules v3` (since 1.4.0), a transparent rules-based strategy in
 `paper_trader/ai/strategy.py`. It is not a prediction engine.
 
 1. **Stop:** sell if the price falls to the stop. The stop starts at the stop-loss % below average
@@ -252,8 +261,13 @@ The AI account runs `momentum+news rules v2` (since 1.2.0), a transparent rules-
 5. **Buy more:** once per holding, when the price dips to within 1% of its 20-day average while
    the trend holds (above the 20- and 50-day averages, up over 20 days). Never below its own
    average cost, so it never adds to a loser.
-6. **News:** negative signals veto a buy, and positive signals raise confidence. News can never
-   start a trade by itself.
+6. **News (majority vote):** count good and bad votes: one for each headline about the stock,
+   one for each market link (each link counts once), and half for each headline about another
+   stock in the same sector. A headline counts once.
+   - More good than bad: **Positive**. Confidence +0.05 per vote of lead, up to +0.15.
+   - Equal (5/5, 7/7): **Neutral**. No effect.
+   - More bad than good: **Negative**. No buy and no buy-more.
+   - News can never start a trade by itself, and it does not make the AI sell.
 
 ### The AI plan
 
@@ -336,8 +350,8 @@ How they are used:
    down, and a fall swaps the up and down lists. Unclear headlines are skipped.
 3. Each stock gets a **net push**: +1 for each link pointing up and -1 for each pointing down.
    Each link counts once, so twenty oil headlines are one vote.
-4. For the AI, the winning side becomes news signals: a negative push can veto a buy, and a
-   positive push raises confidence. Links never start a trade. Turn them off in Settings
+4. For the AI, the winning side's links become votes in the news score (see AI strategy), next
+   to the stock's own headlines and its sector's. Links never start a trade. Turn them off in Settings
    ("Use market links").
 
 The lower table shows every stock you and the AI own, with its net push and the links behind it.

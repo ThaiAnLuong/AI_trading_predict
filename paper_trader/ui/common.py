@@ -165,10 +165,11 @@ def note_popup(anchor: tk.Misc, text: str, x: int, y: int, width: int = 340) -> 
 class Table(ttk.Frame):
     """A Treeview with a scrollbar that keeps the selection across refreshes.
 
-    Press and hold a row to see all of it, long text wrapped; let go to close.
+    Select a row, then rest the mouse on it to see all of it, long text wrapped. Move off
+    the row (or click) to close it.
     """
 
-    HOLD_MS = 450
+    HOVER_MS = 500
 
     def __init__(self, parent, columns: list[tuple[str, int]], height: int = 10):
         super().__init__(parent)
@@ -188,27 +189,34 @@ class Table(ttk.Frame):
         self.names = names
         self.peek: tk.Toplevel | None = None
         self.pending = None
-        self.press_at = (0, 0)
+        self.peek_row: str | None = None  # the row the note is open, waiting or closed for
+        self.tree.bind("<Motion>", self.on_hover, add="+")
         self.tree.bind("<ButtonPress-1>", self.on_press, add="+")
-        self.tree.bind("<B1-Motion>", self.on_drag, add="+")
-        self.tree.bind("<ButtonRelease-1>", self.close_peek, add="+")
+        self.tree.bind("<ButtonRelease-1>", self.on_hover, add="+")
         self.tree.bind("<Leave>", self.close_peek, add="+")
+        self.tree.bind("<KeyPress>", self.close_peek, add="+")
+        self.tree.bind("<MouseWheel>", self.close_peek, add="+")
 
-    # -- press and hold for the full row ----------------------------------------------
+    # -- rest the mouse on the selected row for the full row -------------------------
 
-    def on_press(self, event) -> None:
-        self.close_peek()
+    def on_hover(self, event) -> None:
         row = self.tree.identify_row(event.y)
-        if row:
-            self.press_at = (event.x_root, event.y_root)
-            self.pending = self.tree.after(self.HOLD_MS, lambda: self.open_peek(
+        if not row or row not in self.tree.selection():
+            self.close_peek()
+        elif row != self.peek_row:  # same row: already open, waiting, or closed by a click
+            self.close_peek()
+            self.peek_row = row
+            self.pending = self.tree.after(self.HOVER_MS, lambda: self.open_peek(
                 row, event.x_root, event.y_root))
 
-    def on_drag(self, event) -> None:
-        # moving before the note opens means a drag or a scroll, not a hold
-        if self.pending is not None and (abs(event.x_root - self.press_at[0]) > 6
-                                         or abs(event.y_root - self.press_at[1]) > 6):
-            self.close_peek()
+    def on_press(self, event) -> None:
+        # a click closes the note; clicking the open row keeps it shut until the mouse
+        # leaves that row
+        was_open = self.peek is not None and self.peek_row == self.tree.identify_row(event.y)
+        row = self.peek_row
+        self.close_peek()
+        if was_open:
+            self.peek_row = row
 
     def row_text(self, row: str) -> str:
         lines = []
@@ -224,6 +232,7 @@ class Table(ttk.Frame):
             self.peek = note_popup(self.tree, self.row_text(row), x + 14, y + 10, width=520)
 
     def close_peek(self, _event=None) -> None:
+        self.peek_row = None
         if self.pending is not None:
             self.tree.after_cancel(self.pending)
             self.pending = None

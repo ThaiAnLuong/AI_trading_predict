@@ -26,7 +26,7 @@ from paper_trader.market import alphavantage
 from paper_trader.market.base import Bar, DataUnavailable, MarketDataProvider, Quote
 from paper_trader.money import D
 from paper_trader.news.base import NewsItem
-from paper_trader.news.signals import Signal, load_categories, store_item
+from paper_trader.news.signals import Signal, load_categories, store_item, tally
 from paper_trader.performance import (comparison, load_snapshots, matched_series, max_drawdown_pct,
                                       period_returns, take_snapshots)
 from paper_trader.settings import load_settings, save_settings
@@ -46,9 +46,73 @@ def data(price="135", closes=None, position=None, signals=()):
                        list(signals), D("8"))
 
 
-def signal(direction, id=1):
+def signal(direction, id=1, weight=1.0):
     return Signal(id, "t", "src", "2026-11-04T00:00:00.000000Z", "https://x.test", "", ("label",),
-                  direction)
+                  direction, weight)
+
+
+def votes(good, bad, start=1):
+    return ([signal(1, start + i) for i in range(good)]
+            + [signal(-1, start + good + i) for i in range(bad)])
+
+
+class NewsVote(unittest.TestCase):
+    """Version 1.4.0: the bigger side of the news wins; equal is neutral."""
+    s = MomentumNewsStrategy()
+
+    def test_labels(self):
+        self.assertEqual(tally(votes(6, 4)).label(), "Positive (6/4, +2)")
+        self.assertEqual(tally(votes(5, 5)).label(), "Neutral (5/5, 0)")
+        self.assertEqual(tally(votes(7, 7)).status, "Neutral")
+        self.assertEqual(tally(votes(3, 11)).label(), "Negative (3/11, -8)")
+        self.assertEqual(tally([]).label(), "No news")
+        self.assertEqual(tally([signal(0)]).label(), "No news")  # neutral labels cast no vote
+        half = tally([signal(1), signal(-1, 2, 0.5)])
+        self.assertEqual(half.label(), "Positive (1/0.5, +0.5)")
+
+    def test_one_bad_headline_no_longer_blocks_a_buy(self):
+        result = self.s.evaluate(data(signals=votes(6, 4)))
+        self.assertEqual(result.action, "BUY")
+        self.assertIn("news Positive (6/4, +2)", result.explanation)
+        self.assertEqual(result.plan.news, "Positive (6/4, +2)")
+        self.assertEqual(len(result.signals), 10)
+
+    def test_tie_buys_without_a_bonus(self):
+        plain = self.s.evaluate(data()).confidence
+        result = self.s.evaluate(data(signals=votes(5, 5)))
+        self.assertEqual(result.action, "BUY")
+        self.assertEqual(result.confidence, plain)
+
+    def test_negative_majority_vetoes(self):
+        result = self.s.evaluate(data(signals=votes(3, 11)))
+        self.assertEqual(result.action, "HOLD")
+        self.assertIn("Negative (3/11, -8)", result.explanation)
+
+    def test_bigger_lead_more_confidence_capped(self):
+        c = [self.s.evaluate(data(signals=votes(g, 0))).confidence for g in (1, 2, 3, 6)]
+        self.assertLess(c[0], c[1])
+        self.assertLess(c[1], c[2])
+        self.assertEqual(c[2], c[3])  # capped at +0.15
+
+    def test_sector_news_counts_half(self):
+        # one good headline about the stock against one bad one from its sector: Positive
+        result = self.s.evaluate(data(signals=[signal(1), signal(-1, 2, 0.5)]))
+        self.assertEqual(result.action, "BUY")
+
+    def test_negative_news_blocks_buy_more_and_shows_in_plan(self):
+        closes = rising_closes(60, 100, 0.5)
+        price = D(str(round(sum(closes[-20:]) / 20 * 1.005, 2)))  # just above the 20-day average
+
+        def held_with(news):
+            return self.s.evaluate(TickerInput("RY.TO", price, "CAD", closes, [1000.0] * 60,
+                                               held(str(price)), news, D("8"), price, 1))
+        result = held_with(votes(1, 2))
+        self.assertEqual(result.action, "HOLD")
+        self.assertEqual(result.explanation, "Buy more vetoed: news Negative (1/2, -1).")
+        self.assertEqual(result.plan.news, "Negative (1/2, -1)")
+        result = held_with(votes(2, 1))
+        self.assertEqual(result.action, "BUY")
+        self.assertIn("News Positive (2/1, +1)", result.explanation)
 
 
 class Strategy(unittest.TestCase):
@@ -755,6 +819,29 @@ class NoBrokerage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SectorNews(AppCase):
+    def add_news(self, ticker, label, n):
+        now = self.ctx.clock()
+        for i in range(n):
+            self.ctx.db.conn().execute(
+                "INSERT INTO news_items (title, source, published_ts, fetched_ts, url, tickers,"
+                " labels, keywords, summary, is_demo) VALUES (?,?,?,?,?,?,?,?,?,0)",
+                (f"{ticker} news {i}", "src", to_iso(now - timedelta(hours=1)), to_iso(now),
+                 f"https://x.test/{ticker}/{i}", json.dumps([ticker]), json.dumps([label]),
+                 "[]", ""))
+
+    def test_same_sector_headlines_vote_at_half_weight(self):
+        self.ctx.db.conn().execute(
+            "INSERT INTO watchlist(ticker, name, added_ts) VALUES ('TD.TO', 'TD Bank', 't')")
+        self.add_news("TD.TO", "analyst_downgrade", 3)
+        self.add_news("RY.TO", "analyst_upgrade", 1)
+        found = Cycle(self.ctx).signals("RY.TO")
+        self.assertEqual(tally(found).label(), "Negative (1/1.5, -0.5)")
+        self.update()
+        self.assertEqual(self.trades(), [])  # the sector's bad news outvotes RY's one good item
+        self.assertIn("Negative (1/1.5, -0.5)", self.decisions()[0]["explanation"])
 
 
 class AiPlans(AppCase):

@@ -102,6 +102,87 @@ class Signal:
     summary: str
     labels: tuple[str, ...]
     direction: int  # +1, 0 or -1, from the matched categories
+    weight: float = 1.0  # how much its vote counts: 1 for the stock or a link, 0.5 for sector news
+
+
+SECTOR_WEIGHT = 0.5
+
+
+def _n(x: float) -> str:
+    return str(int(x)) if x == int(x) else f"{x:.1f}"
+
+
+@dataclass(frozen=True)
+class NewsTally:
+    """Good against bad news votes for one stock. The bigger side wins; equal is neutral."""
+    good: float
+    bad: float
+
+    @property
+    def net(self) -> float:
+        return self.good - self.bad
+
+    @property
+    def status(self) -> str:
+        if self.good == 0 and self.bad == 0:
+            return "No news"
+        if self.net > 0:
+            return "Positive"
+        if self.net < 0:
+            return "Negative"
+        return "Neutral"
+
+    def label(self) -> str:
+        if self.status == "No news":
+            return "No news"
+        net = self.net
+        sign = "+" if net > 0 else ("-" if net < 0 else "")
+        return f"{self.status} ({_n(self.good)}/{_n(self.bad)}, {sign}{_n(abs(net))})"
+
+
+def tally(signals) -> NewsTally:
+    good = sum(x.weight for x in signals if x.direction > 0)
+    bad = sum(x.weight for x in signals if x.direction < 0)
+    return NewsTally(round(good, 2), round(bad, 2))
+
+
+def voting(signals) -> list:
+    """The signals that cast a vote (good or bad), for the record."""
+    return [x for x in signals if x.direction != 0]
+
+
+def labelled_items(conn: sqlite3.Connection, now: datetime, lookback_hours: int) -> list:
+    """Recent news items that carry at least one enabled good/bad label, newest first."""
+    since = to_iso(now - timedelta(hours=lookback_hours))
+    return conn.execute(
+        "SELECT * FROM news_items WHERE published_ts >= ? AND published_ts <= ? AND labels != '[]'"
+        " ORDER BY published_ts DESC LIMIT 2000", (since, to_iso(now))).fetchall()
+
+
+def sector_signals(items, ticker: str, peers: set[str], directions: dict[str, int],
+                   limit: int = 20) -> list[Signal]:
+    """Half-weight votes from headlines about other stocks in the same sector."""
+    out = []
+    for row in items:
+        tagged = set(json.loads(row["tickers"]))
+        if ticker in tagged or not (tagged & peers) or not (row["source"] and row["url"]):
+            continue
+        labels = tuple(x for x in json.loads(row["labels"]) if x in directions)
+        votes = sum(directions[x] for x in labels)
+        if votes == 0:
+            continue
+        peer = sorted(tagged & peers)[0]
+        out.append(Signal(row["id"], row["title"], row["source"], row["published_ts"], row["url"],
+                          row["summary"], (f"sector: {peer}",) + labels,
+                          (votes > 0) - (votes < 0), SECTOR_WEIGHT))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def enabled_directions(conn: sqlite3.Connection) -> dict[str, int]:
+    return {r["name"]: r["direction"]
+            for r in conn.execute("SELECT name, direction FROM signal_categories WHERE enabled = 1")}
 
 
 def qualifying_signals(conn: sqlite3.Connection, ticker: str, now: datetime,

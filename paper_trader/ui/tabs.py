@@ -8,8 +8,10 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 
 from .. import dataops
+from ..ai.runner import Cycle
 from ..money import fmt_money, fmt_pct, fmt_price, fmt_qty, fmt_signed
 from ..news.registry import USER_KINDS
+from ..news.signals import tally
 from ..performance import ACCOUNT_LABELS, comparison, matched_series
 from ..settings import save_settings
 from ..symbols import cad_only_message, currency_for, normalize_ticker
@@ -279,7 +281,7 @@ class TradeLogTab(ttk.Frame):
         self.refresh_gains()
         self.count.configure(text=f"{len(rows)} entries shown.  Green: sale at a profit.  "
                                   "Red: sale at a loss.  Buys are not coloured.  "
-                                  "Press and hold a row to read all of it.")
+                                  "Select a row and rest the mouse on it to read all of it.")
 
     def export(self) -> None:
         try:
@@ -302,8 +304,8 @@ class DecisionsTab(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
         ttk.Label(self, text="AI decision log", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(self, text="Press and hold a row to read the full reason, or select it for the "
-                  "details below.", style="Muted.TLabel").grid(row=0, column=0, sticky="e")
+        ttk.Label(self, text="Select a row and rest the mouse on it to read the full reason; "
+                  "details are also below.", style="Muted.TLabel").grid(row=0, column=0, sticky="e")
         self.table = Table(self, [("Time", 125), ("Ticker", 80), ("Action", 55), ("Status", 85),
                                   ("Qty", 55), ("Ref price", 85), ("Sim fill", 85), ("Ccy", 40),
                                   ("Confidence", 80), ("Explanation", 430)], height=13)
@@ -572,11 +574,13 @@ class LinksTab(ttk.Frame):
             row=3, column=0, sticky="w", pady=(10, 0))
         ttk.Label(self, style="Muted.TLabel", text=(
             "Net push: +1 for each link pointing up, -1 for each pointing down (each link counts "
-            "once). Green: news leans up for this stock. Red: leans down. Unverified keyword "
-            "matches, not advice.")).grid(row=4, column=0, sticky="w")
-        self.owned = Table(self, [("Account", 85), ("Ticker", 85), ("Sector", 170),
-                                  ("Net push", 70), ("Links behind it", 420),
-                                  ("Example headline", 420)], height=6)
+            "once). All news score: good/bad votes from the stock's own headlines, the links and "
+            "its sector (half weight); the bigger side wins, equal is Neutral. Green: news leans "
+            "up for this stock. Red: leans down. Unverified keyword matches, not advice.")).grid(
+            row=4, column=0, sticky="w")
+        self.owned = Table(self, [("Account", 85), ("Ticker", 85), ("Sector", 150),
+                                  ("Net push", 70), ("All news score", 150),
+                                  ("Links behind it", 380), ("Example headline", 380)], height=6)
         self.owned.grid(row=5, column=0, sticky="nsew")
         self.detail = details_box(self, 5)
         self.detail.grid(row=6, column=0, sticky="we", pady=(6, 0))
@@ -610,6 +614,7 @@ class LinksTab(ttk.Frame):
         self.links.set_rows(rows)
 
         sectors = sector_map(conn)
+        cycle = Cycle(self.ctx)  # read only: used to count the same news votes the AI sees
         owned_rows = []
         for account, label in (("MY", "My account"), ("AI", "AI account")):
             state_ = load_state(conn, account, s)
@@ -622,7 +627,8 @@ class LinksTab(ttk.Frame):
                     if name not in names:
                         names.append(name)
                 owned_rows.append((f"{account}:{ticker}", (
-                    label, ticker, sector, f"{net:+d}" if net else "0", "; ".join(names) or "none",
+                    label, ticker, sector, f"{net:+d}" if net else "0",
+                    tally(cycle.signals(ticker)).label(), "; ".join(names) or "none",
                     used[0][0].title if used else ""), sign_tag(net)))
         self.owned.set_rows(owned_rows)
 

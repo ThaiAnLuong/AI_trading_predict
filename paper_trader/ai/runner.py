@@ -13,7 +13,8 @@ from ..context import AppContext
 from ..engine import TradeRejected, TradeRequest, slippage_for
 from ..money import CENT, D, QTY_STEP, ZERO
 from ..network import link_signals, recent_hits, sector_for, sector_map
-from ..news.signals import qualifying_signals
+from ..news.signals import (enabled_directions, labelled_items, qualifying_signals,
+                            sector_signals, tally)
 from ..settings import Settings
 from ..timeutil import from_iso, local_date, period_start, to_iso
 from ..valuation import (TRADABLE_STATUS, account_view, budget, latest_fx, load_state,
@@ -33,6 +34,7 @@ def _sources(quote, bars: int, proposal: Proposal, strategy: str, review: str | 
              "url": x.url, "labels": list(x.labels)} for x in proposal.signals],
         "llm_review": review,
         "plan": proposal.plan.as_dict() if proposal.plan else None,
+        "news_score": tally(proposal.signals).label(),
     }, sort_keys=True)
 
 
@@ -46,6 +48,8 @@ class Cycle:
         self.conn = ctx.db.conn()
         self.executed = 0
         self._hits = None
+        self._items = None
+        self._peers = None
         self.sectors = sector_map(self.conn)
 
     def hits(self):
@@ -55,11 +59,34 @@ class Cycle:
                           if self.s.market_links_enabled else [])
         return self._hits
 
+    def peers(self, ticker: str) -> set[str]:
+        """Other watched or held tickers in the same sector (none for Unclassified)."""
+        if self._peers is None:
+            self._peers = {t: sector_for(t, self.sectors) for t in self.tickers()}
+        sector = sector_for(ticker, self.sectors)
+        if sector == "Unclassified":
+            return set()
+        return {t for t, x in self._peers.items() if x == sector and t != ticker}
+
     def signals(self, ticker: str):
+        """Every news vote for a ticker: its own headlines, market links and sector headlines
+        (half weight). A headline counts once."""
         found = qualifying_signals(self.conn, ticker, self.now, self.s.news_lookback_hours)
         seen = {x.id for x in found}
         sector = sector_for(ticker, self.sectors)
-        return found + [x for x in link_signals(self.hits(), ticker, sector) if x.id not in seen]
+        for x in link_signals(self.hits(), ticker, sector):
+            if x.id not in seen:
+                found.append(x)
+                seen.add(x.id)
+        peers = self.peers(ticker)
+        if peers:
+            if self._items is None:
+                self._items = (labelled_items(self.conn, self.now, self.s.news_lookback_hours),
+                               enabled_directions(self.conn))
+            items, directions = self._items
+            found += [x for x in sector_signals(items, ticker, peers, directions)
+                      if x.id not in seen]
+        return found
 
     def tickers(self) -> list[str]:
         held = set(load_state(self.conn, "AI", self.s).positions)
@@ -156,10 +183,10 @@ class Cycle:
                 return
             conn.execute(
                 "INSERT OR REPLACE INTO ai_plans (ticker, ts, plan, target, stop, trailing, add_at,"
-                " why, price, currency) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " why, price, currency, news) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (ticker, to_iso(self.now), plan.label(), str(plan.target), str(plan.stop),
                  int(plan.trailing), str(plan.add_at) if plan.add_at is not None else None,
-                 plan.why, quote["price"], quote["currency"]))
+                 plan.why, quote["price"], quote["currency"], plan.news))
 
     def decide(self, ticker: str) -> None:
         quote = self.conn.execute("SELECT * FROM quotes WHERE ticker = ?", (ticker,)).fetchone()
