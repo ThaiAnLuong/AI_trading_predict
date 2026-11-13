@@ -278,7 +278,8 @@ class TradeLogTab(ttk.Frame):
         self.table.set_rows(table_rows)
         self.refresh_gains()
         self.count.configure(text=f"{len(rows)} entries shown.  Green: sale at a profit.  "
-                                  "Red: sale at a loss.  Buys are not coloured.")
+                                  "Red: sale at a loss.  Buys are not coloured.  "
+                                  "Press and hold a row to read all of it.")
 
     def export(self) -> None:
         try:
@@ -301,6 +302,8 @@ class DecisionsTab(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
         ttk.Label(self, text="AI decision log", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(self, text="Press and hold a row to read the full reason, or select it for the "
+                  "details below.", style="Muted.TLabel").grid(row=0, column=0, sticky="e")
         self.table = Table(self, [("Time", 125), ("Ticker", 80), ("Action", 55), ("Status", 85),
                                   ("Qty", 55), ("Ref price", 85), ("Sim fill", 85), ("Ccy", 40),
                                   ("Confidence", 80), ("Explanation", 430)], height=13)

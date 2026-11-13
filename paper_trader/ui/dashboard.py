@@ -368,7 +368,7 @@ class AiAccountTab(AccountTab):
     def build_extra(self, body) -> None:
         ttk.Label(body, text="AI plan for each holding: hold or sell soon (rough trading days), "
                   "sell target, stop (it rises with the price) and where it would buy more. "
-                  "Rule-based estimates, not forecasts. Red rows: sell soon.",
+                  "Rule-based estimates, not forecasts. Red rows: sell soon. Hold a row to read it all.",
                   style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.plans = Table(body, PLAN_COLUMNS, height=4)
         self.plans.grid(row=3, column=0, sticky="nsew")

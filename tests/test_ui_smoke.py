@@ -417,6 +417,33 @@ class UiSmoke(unittest.TestCase):
         tip.hide()
         self.assertIsNone(tip.pending)
 
+    def test_press_and_hold_shows_the_whole_row(self):
+        tab = self.tab(tabs.TradeLogTab)
+        tab.refresh()
+        table = tab.table
+        row = table.tree.get_children()[0]
+        reason = table.tree.item(row, "values")[-1]
+        table.open_peek(row, 100, 100)
+        self.pump()
+        self.assertIsNotNone(table.peek)
+        self.assertIn(f"Reason:  {reason}", table.row_text(row))
+        for line in table.row_text(row).splitlines():  # empty cells are left out
+            self.assertTrue(line.split(":", 1)[1].strip(), line)
+        table.close_peek()
+        self.assertIsNone(table.peek)
+        # A quick click (released before the wait) never opens it.
+        class Event:
+            x, y, x_root, y_root = 5, 5, 100, 100
+        table.tree.see(row)
+        self.pump()
+        bbox = table.tree.bbox(row)
+        Event.y = bbox[1] + 2
+        table.on_press(Event)
+        self.assertIsNotNone(table.pending)
+        table.close_peek()
+        self.assertIsNone(table.pending)
+        self.assertIsNone(table.peek)
+
     def test_row_colours_follow_the_theme(self):
         table = self.tab(tabs.TradeLogTab).table
         for dark, palette in ((False, common.LIGHT), (True, common.DARK)):

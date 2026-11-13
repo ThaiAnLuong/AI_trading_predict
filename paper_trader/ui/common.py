@@ -141,8 +141,34 @@ def text_box(parent, **options) -> tk.Text:
                    foreground=c["ink"], insertbackground=c["ink"], font=FONT_SMALL, **options)
 
 
+def note_popup(anchor: tk.Misc, text: str, x: int, y: int, width: int = 340) -> tk.Toplevel:
+    """A small borderless note at screen position (x, y), kept on screen."""
+    c = colors()
+    top = tk.Toplevel(anchor)
+    top.wm_overrideredirect(True)
+    top.attributes("-topmost", True)
+    frame = tk.Frame(top, background=c["border"], padx=1, pady=1)
+    frame.pack()
+    tk.Label(frame, text=text, justify="left", wraplength=width, background=c["field"],
+             foreground=c["ink"], font=FONT_SMALL, padx=10, pady=8).pack()
+    top.update_idletasks()
+    window = anchor.winfo_toplevel()
+    right_edge = min(window.winfo_rootx() + window.winfo_width(), anchor.winfo_screenwidth())
+    if x + top.winfo_reqwidth() > right_edge:  # no room on the right: open to the left
+        x = x - top.winfo_reqwidth() - 28
+    x = max(0, min(x, anchor.winfo_screenwidth() - top.winfo_reqwidth() - 8))
+    y = max(0, min(y, anchor.winfo_screenheight() - top.winfo_reqheight() - 48))
+    top.wm_geometry(f"+{x}+{y}")
+    return top
+
+
 class Table(ttk.Frame):
-    """A Treeview with a scrollbar that keeps the selection across refreshes."""
+    """A Treeview with a scrollbar that keeps the selection across refreshes.
+
+    Press and hold a row to see all of it, long text wrapped; let go to close.
+    """
+
+    HOLD_MS = 450
 
     def __init__(self, parent, columns: list[tuple[str, int]], height: int = 10):
         super().__init__(parent)
@@ -159,6 +185,51 @@ class Table(ttk.Frame):
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
         self.retheme()
+        self.names = names
+        self.peek: tk.Toplevel | None = None
+        self.pending = None
+        self.press_at = (0, 0)
+        self.tree.bind("<ButtonPress-1>", self.on_press, add="+")
+        self.tree.bind("<B1-Motion>", self.on_drag, add="+")
+        self.tree.bind("<ButtonRelease-1>", self.close_peek, add="+")
+        self.tree.bind("<Leave>", self.close_peek, add="+")
+
+    # -- press and hold for the full row ----------------------------------------------
+
+    def on_press(self, event) -> None:
+        self.close_peek()
+        row = self.tree.identify_row(event.y)
+        if row:
+            self.press_at = (event.x_root, event.y_root)
+            self.pending = self.tree.after(self.HOLD_MS, lambda: self.open_peek(
+                row, event.x_root, event.y_root))
+
+    def on_drag(self, event) -> None:
+        # moving before the note opens means a drag or a scroll, not a hold
+        if self.pending is not None and (abs(event.x_root - self.press_at[0]) > 6
+                                         or abs(event.y_root - self.press_at[1]) > 6):
+            self.close_peek()
+
+    def row_text(self, row: str) -> str:
+        lines = []
+        for name, value in zip(self.names, self.tree.item(row, "values")):
+            text = str(value).strip()
+            if text and text != "-":
+                lines.append(f"{name}:  {text}")
+        return "\n".join(lines)
+
+    def open_peek(self, row: str, x: int, y: int) -> None:
+        self.pending = None
+        if self.tree.exists(row):
+            self.peek = note_popup(self.tree, self.row_text(row), x + 14, y + 10, width=520)
+
+    def close_peek(self, _event=None) -> None:
+        if self.pending is not None:
+            self.tree.after_cancel(self.pending)
+            self.pending = None
+        if self.peek is not None:
+            self.peek.destroy()
+            self.peek = None
 
     def retheme(self) -> None:
         c = colors()
@@ -245,21 +316,9 @@ class HelpTip:
         self.pending = None
         if self.popup is not None:
             return
-        c = colors()
-        self.popup = top = tk.Toplevel(self.icon)
-        top.wm_overrideredirect(True)
-        top.attributes("-topmost", True)
-        frame = tk.Frame(top, background=c["border"], padx=1, pady=1)
-        frame.pack()
-        tk.Label(frame, text=self.text, justify="left", wraplength=340, background=c["field"],
-                 foreground=c["ink"], font=FONT_SMALL, padx=10, pady=8).pack()
-        x = self.icon.winfo_rootx() + self.icon.winfo_width() + 6
-        y = self.icon.winfo_rooty() - 4
-        top.update_idletasks()
-        # keep it on screen near the right and bottom edges
-        x = min(x, self.icon.winfo_screenwidth() - top.winfo_reqwidth() - 8)
-        y = min(y, self.icon.winfo_screenheight() - top.winfo_reqheight() - 48)
-        top.wm_geometry(f"+{x}+{y}")
+        self.popup = note_popup(self.icon, self.text,
+                                self.icon.winfo_rootx() + self.icon.winfo_width() + 6,
+                                self.icon.winfo_rooty() - 4)
 
     def hide(self, _event=None) -> None:
         self.cancel()
