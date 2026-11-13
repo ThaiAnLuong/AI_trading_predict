@@ -28,6 +28,7 @@ the app is closed, AI trading, price updates and snapshots stop.
 Versions are numbered `A.B.C`: **A** for a major change, **B** for a change to a function, method or
 calculation, and **C** for UX/UI and quality work.
 
+- **1.3.1:** a "?" next to every setting. Hover over it (or click it) for a short note on what the setting does.
 - **1.3.0:** sectors, market links and gain by ticker.
   - Every stock has a sector, shown in both accounts and the watchlist and changeable there.
   - 30 market links connect news in one area to the sectors it tends to move. They can veto or

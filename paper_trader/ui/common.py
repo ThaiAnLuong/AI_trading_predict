@@ -90,6 +90,8 @@ def _style(root: tk.Misc, c: dict) -> None:
     style.map("Tab.Toolbutton",
               background=[("selected", c["select"]), ("active", c["button_active"])],
               foreground=[("selected", c["ink"])], relief=[("selected", "flat")])
+    style.configure("Help.TLabel", foreground=c["my"], font=("Segoe UI", 9, "bold"),
+                    padding=(4, 0))
     style.configure("Group.TLabel", foreground=c["muted"], font=("Segoe UI", 8, "bold"))
     style.configure("Treeview", background=c["surface"], fieldbackground=c["surface"],
                     foreground=c["ink"], rowheight=26, bordercolor=c["border"])
@@ -202,9 +204,87 @@ def show_info(parent, message: str) -> None:
     messagebox.showinfo("Paper Trader", message, parent=parent)
 
 
-def form_row(parent, row: int, label: str, widget, hint: str = "") -> None:
+class HelpTip:
+    """A small "?" that explains a setting. Hover for half a second (or click) to open the
+    note; move the mouse away (or click again) to close it."""
+
+    DELAY_MS = 500
+
+    def __init__(self, parent, text: str):
+        self.text = text
+        self.icon = ttk.Label(parent, text="?", style="Help.TLabel", cursor="question_arrow")
+        self.popup: tk.Toplevel | None = None
+        self.pending = None
+        self.icon.bind("<Enter>", self.schedule)
+        self.icon.bind("<Leave>", self.hide)
+        self.icon.bind("<Button-1>", self.toggle)
+
+    def grid(self, **options) -> None:
+        self.icon.grid(**options)
+
+    def pack(self, **options) -> None:
+        self.icon.pack(**options)
+
+    def schedule(self, _event=None) -> None:
+        self.cancel()
+        self.pending = self.icon.after(self.DELAY_MS, self.show)
+
+    def cancel(self) -> None:
+        if self.pending is not None:
+            self.icon.after_cancel(self.pending)
+            self.pending = None
+
+    def toggle(self, _event=None) -> None:
+        if self.popup is not None:
+            self.hide()
+        else:
+            self.cancel()
+            self.show()
+
+    def show(self) -> None:
+        self.pending = None
+        if self.popup is not None:
+            return
+        c = colors()
+        self.popup = top = tk.Toplevel(self.icon)
+        top.wm_overrideredirect(True)
+        top.attributes("-topmost", True)
+        frame = tk.Frame(top, background=c["border"], padx=1, pady=1)
+        frame.pack()
+        tk.Label(frame, text=self.text, justify="left", wraplength=340, background=c["field"],
+                 foreground=c["ink"], font=FONT_SMALL, padx=10, pady=8).pack()
+        x = self.icon.winfo_rootx() + self.icon.winfo_width() + 6
+        y = self.icon.winfo_rooty() - 4
+        top.update_idletasks()
+        # keep it on screen near the right and bottom edges
+        x = min(x, self.icon.winfo_screenwidth() - top.winfo_reqwidth() - 8)
+        y = min(y, self.icon.winfo_screenheight() - top.winfo_reqheight() - 48)
+        top.wm_geometry(f"+{x}+{y}")
+
+    def hide(self, _event=None) -> None:
+        self.cancel()
+        if self.popup is not None:
+            self.popup.destroy()
+            self.popup = None
+
+
+def form_row(parent, row: int, label: str, widget, hint: str = "", help: str = "") -> None:
+    """Label, input, then an optional "?" note and a short grey hint."""
     ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
     widget.grid(row=row, column=1, sticky="we", pady=3)
+    if help:
+        HelpTip(parent, help).grid(row=row, column=2, sticky="w", padx=(6, 0))
     if hint:
-        ttk.Label(parent, text=hint, style="Muted.TLabel").grid(row=row, column=2, sticky="w",
-                                                                padx=(8, 0))
+        ttk.Label(parent, text=hint, style="Muted.TLabel").grid(
+            row=row, column=3 if help else 2, sticky="w", padx=(8, 0))
+
+
+def check_row(parent, row: int, text: str, variable, help: str = "") -> ttk.Checkbutton:
+    """A checkbox across the form, with an optional "?" note after it."""
+    line = ttk.Frame(parent)
+    line.grid(row=row, column=0, columnspan=4, sticky="w")
+    box = ttk.Checkbutton(line, text=text, variable=variable)
+    box.pack(side="left")
+    if help:
+        HelpTip(line, help).pack(side="left", padx=(6, 0))
+    return box

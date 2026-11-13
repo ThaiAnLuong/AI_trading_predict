@@ -394,6 +394,29 @@ class UiSmoke(unittest.TestCase):
         self.check_sign_colours(self.tags_by_value(tab.gain_tables["AI"], "Total"))
         self.assertIn("All together", tab.gain_notes["MY"].cget("text"))
 
+    def test_every_setting_has_a_help_note_that_opens_and_closes(self):
+        for _, rows in admin.TEXT_FIELDS:
+            for key, _, _ in rows:
+                self.assertTrue(admin.HELP.get(key), key)
+        tab = self.tab(admin.SettingsTab)
+        icons = [w for w in self.all_widgets(tab) if isinstance(w, ttk.Label)
+                 and str(w.cget("style")) == "Help.TLabel"]
+        self.assertGreaterEqual(len(icons), 25)
+        tip = common.HelpTip(tab, "Test note")
+        tip.grid(row=9, column=0)
+        tip.show()
+        self.pump()
+        self.assertTrue(tip.popup.winfo_exists())
+        tip.hide()
+        self.assertIsNone(tip.popup)
+        tip.toggle()  # a click opens at once ...
+        self.assertIsNotNone(tip.popup)
+        tip.toggle()  # ... and a second click closes
+        self.assertIsNone(tip.popup)
+        tip.schedule()  # hovering waits before opening; leaving cancels
+        tip.hide()
+        self.assertIsNone(tip.pending)
+
     def test_row_colours_follow_the_theme(self):
         table = self.tab(tabs.TradeLogTab).table
         for dark, palette in ((False, common.LIGHT), (True, common.DARK)):

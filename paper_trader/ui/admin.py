@@ -11,7 +11,7 @@ from ..config import api_key
 from ..market.registry import PROVIDERS
 from ..money import parse_decimal
 from ..settings import MARKET_PROVIDERS, Settings, save_settings
-from .common import Table, form_row, show_error, show_info
+from .common import HelpTip, Table, check_row, form_row, show_error, show_info
 
 ABOUT = """This is a paper-trading experiment. Every trade is a row in a local database. \
 No money is involved, no brokerage is connected, and the app has no way to place a real order.
@@ -57,6 +57,66 @@ TEXT_FIELDS = (
 )
 INT_FIELDS = {f.name for f in fields(Settings) if f.type == "int"}
 
+# What each setting does, shown by the "?" next to it.
+HELP = {
+    "starting_balance": "The cash each account (yours and the AI's) starts the experiment "
+        "with, in CAD. Locked once any trade exists, so both accounts stay comparable. To change "
+        "it, use Reset experiment on the About and data tab.",
+    "period_limit": "The most new money each account can put into stocks per day or week. "
+        "Selling gives allowance back, but never more than you used. Blank means the starting "
+        "balance. The reset only restores the allowance; it never adds cash.",
+    "reset_period": "When the buy limit starts over. Daily: local midnight. Weekly: Monday "
+        "00:00.",
+    "allow_fractional": "Allow buying part of a share (up to 4 decimals), in both accounts. "
+        "Off: whole shares only.",
+    "cad_only": "Only CAD listings (.TO, .V, .NE) can be bought or imported. US companies are "
+        "traded through their Canadian CDRs, such as GOOG.TO. US tickers on the watchlist are "
+        "skipped.",
+    "max_quote_age_minutes": "A live price older than this counts as stale. The AI pauses that "
+        "stock, and a manual trade asks you to confirm and is flagged STALE in the trade log.",
+    "max_eod_age_days": "For end-of-day sources such as Alpha Vantage: a closing price older "
+        "than this many days counts as stale, which pauses the AI for that stock.",
+    "max_fx_age_days": "Only matters with US tickers allowed: a USD/CAD rate older than this "
+        "blocks US trades.",
+    "refresh_minutes": "How often prices are fetched while the app is open. The AI makes its "
+        "decisions right after each refresh.",
+    "snapshot_minutes": "How often both account values are recorded. Snapshots feed the "
+        "performance numbers and the Compare chart.",
+    "news_minutes": "How often the news feeds on the News tab are read.",
+    "market_provider": "Where prices come from. Yahoo: free, unofficial, no key. Alpha "
+        "Vantage: needs a key, closing prices only, about 25 calls a day. Twelve Data: needs a "
+        "key, and Canada needs a paid plan.",
+    "max_trade_size": "The most CAD the AI spends on one buy, including buying more of a stock "
+        "it already holds. It may spend less to stay inside cash, limit and exposure rules.",
+    "max_daily_buys": "The most buys the AI makes in one day, counting buy-more orders. Sells "
+        "are never limited.",
+    "max_positions": "The most different stocks the AI holds at once. Buying more of a stock "
+        "it already holds does not count as a new one.",
+    "max_exposure_pct": "The most of the AI account's value that can be in stocks; the rest "
+        "stays as cash. 80 means at least 20% cash.",
+    "stop_loss_pct": "The AI sells if the price falls this % below what it paid. Once the "
+        "price rises, the stop moves up to this % below the highest price since buying. The "
+        "sell target is twice this % above cost (8% -> +16%).",
+    "min_confidence": "The AI only buys when its confidence (0 to 1) is at least this. A basic "
+        "uptrend scores 0.55; high volume and supporting news add to it.",
+    "news_lookback_hours": "How far back news and market-link headlines count when the AI "
+        "decides.",
+    "market_links_enabled": "Use the 30 market links (Market links tab): sector news can stop "
+        "an AI buy or raise its confidence. It never starts a trade by itself. Off: the tab "
+        "still shows the links, for information only.",
+    "llm_review_enabled": "Before each AI buy, ask Claude to approve or veto it. Needs "
+        "ANTHROPIC_API_KEY in the source API file, and each review is a paid API call. Not "
+        "tested against the real service yet. If the review fails, the AI does not buy.",
+    "llm_model": "The Claude model used for the optional buy review.",
+    "llm_max_reviews_per_day": "The most paid Claude reviews per day. Once reached, further "
+        "AI buys that day are skipped.",
+    "slippage": "Simulates the gap between the quoted price and the price you would really "
+        "get. Buys fill a little higher and sells a little lower. abs: an amount per share in "
+        "the stock's currency. pct: a % of the price. Not a broker fee.",
+    "default_category": "The slippage category for any stock not given one on the Watchlist "
+        "tab.",
+}
+
 
 class SettingsTab(ttk.Frame):
     def __init__(self, parent, app):
@@ -76,38 +136,39 @@ class SettingsTab(ttk.Frame):
             box.columnconfigure(1, weight=1)
             for r, (key, label, hint) in enumerate(rows):
                 self.vars[key] = tk.StringVar()
-                form_row(box, r, label, ttk.Entry(box, textvariable=self.vars[key], width=18), hint)
+                form_row(box, r, label, ttk.Entry(box, textvariable=self.vars[key], width=18),
+                         hint, HELP.get(key, ""))
             if i == 0:
                 self.period = tk.StringVar()
                 self.fractional = tk.BooleanVar()
                 form_row(box, 2, "Limit resets", ttk.Combobox(
                     box, textvariable=self.period, values=("daily", "weekly"), state="readonly",
-                    width=16))
-                ttk.Checkbutton(box, text="Allow fractional shares (up to 4 decimals)",
-                                variable=self.fractional).grid(row=3, column=0, columnspan=3, sticky="w")
+                    width=16), help=HELP["reset_period"])
+                check_row(box, 3, "Allow fractional shares (up to 4 decimals)", self.fractional,
+                          HELP["allow_fractional"])
                 self.cad_only = tk.BooleanVar()
-                ttk.Checkbutton(box, text="CAD tickers only (blocks buying US listings)",
-                                variable=self.cad_only).grid(row=4, column=0, columnspan=3, sticky="w")
+                check_row(box, 4, "CAD tickers only (blocks buying US listings)", self.cad_only,
+                          HELP["cad_only"])
             if i == 1:
                 self.provider = tk.StringVar()
                 form_row(box, 6, "Market data", ttk.Combobox(
                     box, textvariable=self.provider, values=MARKET_PROVIDERS, state="readonly",
-                    width=16))
+                    width=16), help=HELP["market_provider"])
                 self.key_label = ttk.Label(box, style="Muted.TLabel")
                 self.key_label.grid(row=7, column=0, columnspan=3, sticky="w")
             if i == 2:
                 self.links = tk.BooleanVar()
-                ttk.Checkbutton(box, text="Use market links (sector news can veto or support a buy)",
-                                variable=self.links).grid(row=len(rows), column=0, columnspan=3,
-                                                          sticky="w")
+                check_row(box, len(rows), "Use market links (sector news can veto or support a buy)",
+                          self.links, HELP["market_links_enabled"])
             if i == 3:
                 self.llm = tk.BooleanVar()
-                ttk.Checkbutton(box, text="Review AI buy candidates with Claude (not live-tested)",
-                                variable=self.llm).grid(row=2, column=0, columnspan=3, sticky="w")
+                check_row(box, 2, "Review AI buy candidates with Claude (not live-tested)",
+                          self.llm, HELP["llm_review_enabled"])
 
         slip = ttk.LabelFrame(left, text="Simulated spread/slippage (not a broker fee)", padding=8)
         slip.pack(fill="x", pady=(6, 0))
         slip.columnconfigure(0, weight=1)
+        HelpTip(slip, HELP["slippage"]).grid(row=0, column=5, sticky="nw", padx=(6, 0))
         self.slip_table = Table(slip, [("Category", 110), ("Mode", 60), ("Value", 70)], height=3)
         self.slip_table.grid(row=0, column=0, columnspan=5, sticky="we")
         self.slip_table.on_select(self.pick_category)
@@ -125,6 +186,7 @@ class SettingsTab(ttk.Frame):
         self.default_box = ttk.Combobox(slip, textvariable=self.default_cat, state="readonly", width=12)
         ttk.Label(slip, text="Default category").grid(row=3, column=0, sticky="w")
         self.default_box.grid(row=3, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        HelpTip(slip, HELP["default_category"]).grid(row=3, column=3, sticky="w", pady=(4, 0))
 
         ttk.Button(right, text="Save settings", command=self.save).pack(anchor="e", pady=(10, 0))
         ttk.Label(right, style="Muted.TLabel", wraplength=420, justify="left", text=(
