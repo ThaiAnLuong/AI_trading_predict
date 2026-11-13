@@ -9,7 +9,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -102,6 +102,9 @@ CREATE TABLE IF NOT EXISTS ai_plans (
     ticker TEXT PRIMARY KEY, ts TEXT NOT NULL, plan TEXT NOT NULL, target TEXT NOT NULL,
     stop TEXT NOT NULL, trailing INTEGER NOT NULL DEFAULT 0, add_at TEXT,
     why TEXT NOT NULL DEFAULT '', price TEXT, currency TEXT);
+
+-- Sectors you chose on the Watchlist tab (version 4). Others use the built-in list.
+CREATE TABLE IF NOT EXISTS ticker_sectors (ticker TEXT PRIMARY KEY, sector TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS news_items (
     id INTEGER PRIMARY KEY, title TEXT NOT NULL, source TEXT NOT NULL,

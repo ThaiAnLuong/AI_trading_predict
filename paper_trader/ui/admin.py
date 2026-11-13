@@ -95,6 +95,11 @@ class SettingsTab(ttk.Frame):
                     width=16))
                 self.key_label = ttk.Label(box, style="Muted.TLabel")
                 self.key_label.grid(row=7, column=0, columnspan=3, sticky="w")
+            if i == 2:
+                self.links = tk.BooleanVar()
+                ttk.Checkbutton(box, text="Use market links (sector news can veto or support a buy)",
+                                variable=self.links).grid(row=len(rows), column=0, columnspan=3,
+                                                          sticky="w")
             if i == 3:
                 self.llm = tk.BooleanVar()
                 ttk.Checkbutton(box, text="Review AI buy candidates with Claude (not live-tested)",
@@ -137,6 +142,7 @@ class SettingsTab(ttk.Frame):
             self.cad_only.set(s.cad_only)
             self.provider.set(s.market_provider)
             self.llm.set(s.llm_review_enabled)
+            self.links.set(s.market_links_enabled)
             self.default_cat.set(s.default_category)
             self.loaded = True
         self.draw_categories(s)
@@ -207,6 +213,7 @@ class SettingsTab(ttk.Frame):
         s.cad_only = self.cad_only.get()
         s.market_provider = self.provider.get()
         s.llm_review_enabled = self.llm.get()
+        s.market_links_enabled = self.links.get()
         s.default_category = self.default_cat.get()
         if self.store(s):
             self.app.worker.request_refresh()

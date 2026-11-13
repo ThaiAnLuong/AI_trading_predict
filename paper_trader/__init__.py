@@ -4,4 +4,4 @@ This package has no brokerage integration and cannot place real trades.
 """
 
 # A.B.C: A = major change, B = function, method or calculation, C = UX/UI and quality.
-__version__ = "1.2.0"
+__version__ = "1.3.0"

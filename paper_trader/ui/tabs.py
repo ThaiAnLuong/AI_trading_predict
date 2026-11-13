@@ -14,7 +14,9 @@ from ..performance import ACCOUNT_LABELS, comparison, matched_series
 from ..settings import save_settings
 from ..symbols import cad_only_message, currency_for, normalize_ticker
 from ..timeutil import local_str, to_iso
-from ..valuation import load_quotes, load_state, load_trades, quote_status
+from ..network import LINKS, SECTORS, net_effect, recent_hits, sector_for, sector_map, set_sector
+from ..valuation import (account_view, load_quotes, load_state, load_trades, quote_status,
+                         ticker_totals)
 from .chart import ValueChart
 from ..ledger import realized_by_sale
 from .common import Table, bold_num, show_error, show_info, sign_tag, text_box
@@ -43,9 +45,10 @@ class WatchlistTab(ttk.Frame):
                   "TSX Venture: ABC.V.  Cboe Canada: GOOG.NE.  Yellow rows: held by the AI account.",
                   style="Muted.TLabel").grid(
             row=1, column=0, sticky="w", pady=(0, 6))
-        self.table = Table(self, [("Ticker", 90), ("Company name", 170), ("AI holds", 65),
-                                  ("Ref price", 90), ("Ccy", 45), ("Exchange", 80), ("Price time", 125),
-                                  ("Data", 130), ("Source and timing", 300), ("Slippage", 80)],
+        self.table = Table(self, [("Ticker", 90), ("Company name", 160), ("Sector", 160),
+                                  ("AI holds", 60), ("Ref price", 90), ("Ccy", 45),
+                                  ("Exchange", 75), ("Price time", 125), ("Data", 120),
+                                  ("Source and timing", 260), ("Slippage", 75)],
                            height=14)
         self.table.grid(row=2, column=0, sticky="nsew")
         self.table.on_select(self.selected)
@@ -63,6 +66,10 @@ class WatchlistTab(ttk.Frame):
         self.category_box = ttk.Combobox(bar, textvariable=self.category, width=10, state="readonly")
         self.category_box.pack(side="right", padx=4)
         ttk.Button(bar, text="Set slippage category", command=self.set_category).pack(side="right")
+        self.sector = tk.StringVar()
+        ttk.Button(bar, text="Set sector", command=self.set_sector).pack(side="right", padx=(12, 0))
+        ttk.Combobox(bar, textvariable=self.sector, values=SECTORS, width=24,
+                     state="readonly").pack(side="right", padx=4)
         self.error = ttk.Label(self, style="Muted.TLabel", wraplength=1100)
         self.error.grid(row=4, column=0, sticky="w", pady=(4, 0))
 
@@ -72,13 +79,14 @@ class WatchlistTab(ttk.Frame):
         now = self.ctx.clock()
         quotes = load_quotes(conn)
         ai_held = set(load_state(conn, "AI", s).positions)
+        sectors = sector_map(conn)
         rows = []
         for w in conn.execute("SELECT * FROM watchlist ORDER BY ticker"):
             t = w["ticker"]
             q = quotes.get(t)
             held = t in ai_held
             rows.append((t, (
-                t, w["name"], "yes" if held else "", bold_num(fmt_price(q["price"])) if q is not None else "n/a",
+                t, w["name"], sector_for(t, sectors), "yes" if held else "", bold_num(fmt_price(q["price"])) if q is not None else "n/a",
                 currency_for(t), (q["exchange"] if q is not None else None) or "?",
                 local_str(q["quote_ts"]) if q is not None else "never",
                 quote_status(q, s, now),
@@ -96,6 +104,7 @@ class WatchlistTab(ttk.Frame):
         if ticker:
             s = self.ctx.settings()
             self.category.set(s.ticker_categories.get(ticker, s.default_category))
+            self.sector.set(sector_for(ticker, sector_map(self.ctx.db.conn())))
 
     def add(self) -> None:
         try:
@@ -121,6 +130,14 @@ class WatchlistTab(ttk.Frame):
             return
         self.ctx.db.conn().execute("DELETE FROM watchlist WHERE ticker = ?", (ticker,))
         self.refresh()
+
+    def set_sector(self) -> None:
+        ticker = self.table.selected()
+        if not ticker or not self.sector.get():
+            show_error(self, "Select a ticker and a sector first.")
+            return
+        set_sector(self.ctx.db.conn(), ticker, self.sector.get())
+        self.app.refresh_all()
 
     def set_category(self) -> None:
         ticker = self.table.selected()
@@ -159,14 +176,67 @@ class TradeLogTab(ttk.Frame):
         ttk.Label(bar, text="(YYYY-MM-DD)", style="Muted.TLabel").pack(side="left")
         ttk.Button(bar, text="Apply", command=self.apply).pack(side="left", padx=6)
         ttk.Button(bar, text="Export these to CSV", command=self.export).pack(side="right")
-        self.table = Table(self, [("Time", 125), ("Account", 80), ("By", 65), ("Action", 60),
+        pages = ttk.Notebook(self)
+        pages.grid(row=2, column=0, sticky="nsew")
+        trades_page = ttk.Frame(pages, padding=(0, 6, 0, 0))
+        gains_page = ttk.Frame(pages, padding=(0, 6, 0, 0))
+        pages.add(trades_page, text="All trades")
+        pages.add(gains_page, text="Gain by ticker")
+        self.pages = pages
+        trades_page.columnconfigure(0, weight=1)
+        trades_page.rowconfigure(0, weight=1)
+        self.build_gains(gains_page)
+        self.table = Table(trades_page, [("Time", 125), ("Account", 80), ("By", 65), ("Action", 60),
                                   ("Ticker", 80), ("Qty", 60), ("Ccy", 40), ("Ref price", 85),
                                   ("Sim fill", 85), ("USD/CAD", 65), ("Cash CAD", 90),
                                   ("Realized", 100), ("Group", 75), ("Flags", 55), ("Reason", 220)],
-                           height=16)
-        self.table.grid(row=2, column=0, sticky="nsew")
-        self.count = ttk.Label(self, style="Muted.TLabel")
-        self.count.grid(row=3, column=0, sticky="w")
+                           height=14)
+        self.table.grid(row=0, column=0, sticky="nsew")
+        self.count = ttk.Label(trades_page, style="Muted.TLabel")
+        self.count.grid(row=1, column=0, sticky="w")
+
+    def build_gains(self, page) -> None:
+        page.columnconfigure((0, 1), weight=1, uniform="half")
+        page.rowconfigure(1, weight=1)
+        self.gain_tables, self.gain_notes = {}, {}
+        columns = [("Ticker", 80), ("Sector", 140), ("Buys", 45), ("Sells", 45), ("Held", 55),
+                   ("Realized", 95), ("Open now", 90), ("Total", 95)]
+        for col, (account, label) in enumerate((("MY", "My account"), ("AI", "AI account"))):
+            ttk.Label(page, text=label, style="Title.TLabel").grid(
+                row=0, column=col, sticky="w", padx=(0 if col == 0 else 12, 0))
+            table = Table(page, columns, height=12)
+            table.grid(row=1, column=col, sticky="nsew", padx=(0 if col == 0 else 12, 0))
+            note = ttk.Label(page, style="Muted.TLabel")
+            note.grid(row=2, column=col, sticky="w", padx=(0 if col == 0 else 12, 0))
+            self.gain_tables[account], self.gain_notes[account] = table, note
+        ttk.Label(page, style="Muted.TLabel", wraplength=1000, justify="left", text=(
+            "All-time result per ticker, in CAD. Realized adds up every finished sale (sold at a "
+            "100 loss, then later at a 60 gain: -40). Open now is the shares still held at today's "
+            "price. Total = Realized + Open now. Green: ahead overall. Red: behind. The Ticker "
+            "box above filters this page too. Imported holdings are not included.")).grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+    def refresh_gains(self) -> None:
+        conn = self.ctx.db.conn()
+        s = self.ctx.settings()
+        now = self.ctx.clock()
+        sectors = sector_map(conn)
+        wanted = self.ticker.get().strip().upper()
+        for account, table in self.gain_tables.items():
+            rows = [r for r in ticker_totals(conn, account, s, now)
+                    if not wanted or wanted in r.ticker]
+            table.set_rows([(r.ticker, (
+                r.ticker, sector_for(r.ticker, sectors), r.buys, r.sells,
+                fmt_qty(r.held) if r.held else "-", fmt_signed(r.realized) if r.sells else "-",
+                fmt_signed(r.unrealized) if r.held and r.unrealized is not None
+                else ("n/a" if r.held else "-"),
+                fmt_signed(r.total) if r.total is not None else "n/a"),
+                sign_tag(r.total)) for r in rows])
+            known = [r.total for r in rows if r.total is not None]
+            self.gain_notes[account].configure(text=(
+                f"{len(rows)} tickers.  All together: {fmt_signed(sum(known))}"
+                + ("  (some prices missing)" if len(known) < len(rows) else "")) if rows
+                else "No trades yet.")
 
     def filter(self):
         account = {"My account": "MY", "AI account": "AI"}.get(self.account.get(), "")
@@ -206,6 +276,7 @@ class TradeLogTab(ttk.Frame):
                 "Imported" if r["sleeve"] == "IMPORTED" else "Trading",
                 "STALE" if r["quote_stale"] else "", r["reason"]), sign_tag(gain)))
         self.table.set_rows(table_rows)
+        self.refresh_gains()
         self.count.configure(text=f"{len(rows)} entries shown.  Green: sale at a profit.  "
                                   "Red: sale at a loss.  Buys are not coloured.")
 
@@ -475,3 +546,98 @@ class CompareTab(ttk.Frame):
         dataops.export_performance(conn, folder / "performance_snapshots.csv")
         dataops.export_comparison(conn, folder / "comparison_daily.csv")
         show_info(self, f"Saved performance_snapshots.csv and comparison_daily.csv in\n{folder}")
+
+
+class LinksTab(ttk.Frame):
+    """The market links and what recent headlines mean for the stocks you and the AI own."""
+
+    def __init__(self, parent, app):
+        super().__init__(parent, padding=10)
+        self.app, self.ctx = app, app.ctx
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=3)
+        self.rowconfigure(5, weight=2)
+        ttk.Label(self, text="Market links", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        self.intro = ttk.Label(self, style="Muted.TLabel", wraplength=1150, justify="left")
+        self.intro.grid(row=1, column=0, sticky="w", pady=(0, 6))
+        self.links = Table(self, [("#", 35), ("If this happens", 230), ("Tends to go up", 260),
+                                  ("Tends to go down", 260), ("Headlines", 75),
+                                  ("Latest headline", 380)], height=10)
+        self.links.grid(row=2, column=0, sticky="nsew")
+        self.links.on_select(self.show)
+        ttk.Label(self, text="Stocks you and the AI own, against the links", style="Title.TLabel").grid(
+            row=3, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(self, style="Muted.TLabel", text=(
+            "Net push: +1 for each link pointing up, -1 for each pointing down (each link counts "
+            "once). Green: news leans up for this stock. Red: leans down. Unverified keyword "
+            "matches, not advice.")).grid(row=4, column=0, sticky="w")
+        self.owned = Table(self, [("Account", 85), ("Ticker", 85), ("Sector", 170),
+                                  ("Net push", 70), ("Links behind it", 420),
+                                  ("Example headline", 420)], height=6)
+        self.owned.grid(row=5, column=0, sticky="nsew")
+        self.detail = details_box(self, 5)
+        self.detail.grid(row=6, column=0, sticky="we", pady=(6, 0))
+        self.hits = []
+
+    def refresh(self) -> None:
+        conn = self.ctx.db.conn()
+        s = self.ctx.settings()
+        now = self.ctx.clock()
+        hours = s.news_lookback_hours
+        self.hits = recent_hits(conn, now, hours)
+        state = "ON: they can veto or support AI buys" if s.market_links_enabled else (
+            "OFF in Settings: shown for information only")
+        self.intro.configure(text=(
+            f"How news in one area tends to move other sectors. Headlines from the last {hours} "
+            f"hours are matched to each link. Links are {state}. They never start a trade on "
+            "their own. Assign sectors on the Watchlist tab."))
+        by_link: dict[int, list] = {}
+        for hit in self.hits:
+            by_link.setdefault(hit.link.id, []).append(hit)
+        rows = []
+        for link in LINKS:
+            found = by_link.get(link.id, [])
+            latest = found[0] if found else None
+            arrow = ""
+            if latest is not None and link.moves:
+                arrow = "↑ " if latest.direction > 0 else "↓ "
+            rows.append((str(link.id), (
+                link.id, link.title(), ", ".join(link.up) or "-", ", ".join(link.down) or "-",
+                len(found), (arrow + latest.title) if latest else "")))
+        self.links.set_rows(rows)
+
+        sectors = sector_map(conn)
+        owned_rows = []
+        for account, label in (("MY", "My account"), ("AI", "AI account")):
+            state_ = load_state(conn, account, s)
+            for ticker in sorted(set(state_.positions) | set(state_.imported)):
+                sector = sector_for(ticker, sectors)
+                net, used = net_effect(self.hits, ticker, sector)
+                names = []
+                for hit, e in used:
+                    name = f"{'+' if e > 0 else '-'} {hit.link.id} {hit.link.name}"
+                    if name not in names:
+                        names.append(name)
+                owned_rows.append((f"{account}:{ticker}", (
+                    label, ticker, sector, f"{net:+d}" if net else "0", "; ".join(names) or "none",
+                    used[0][0].title if used else ""), sign_tag(net)))
+        self.owned.set_rows(owned_rows)
+
+    def show(self) -> None:
+        chosen = self.links.selected()
+        if not chosen:
+            return
+        link = next(x for x in LINKS if str(x.id) == chosen)
+        found = [h for h in self.hits if h.link.id == link.id]
+        lines = [f"{link.id}. {link.title()}",
+                 f"Matches headlines with: {', '.join(link.any_of)}"
+                 + (f"  and also: {', '.join(link.need)}" if link.need else "")]
+        if link.moves:
+            lines.append("Price link: words like rises/surges count as up, falls/slumps as down; "
+                         "for a fall the up and down lists swap.")
+        if link.note:
+            lines.append(link.note)
+        lines.append(f"{len(found)} matching headline(s) in the window:")
+        lines += [f"  {local_str(h.published_ts)}  {'↑' if h.direction > 0 else '↓'}  {h.title}  "
+                  f"({h.source})" for h in found[:12]]
+        set_text(self.detail, "\n".join(lines))

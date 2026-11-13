@@ -28,6 +28,12 @@ the app is closed, AI trading, price updates and snapshots stop.
 Versions are numbered `A.B.C`: **A** for a major change, **B** for a change to a function, method or
 calculation, and **C** for UX/UI and quality work.
 
+- **1.3.0:** sectors, market links and gain by ticker.
+  - Every stock has a sector, shown in both accounts and the watchlist and changeable there.
+  - 30 market links connect news in one area to the sectors it tends to move. They can veto or
+    support an AI buy, never start one. See the Market links tab.
+  - The trade log has a Gain by ticker page: each ticker's all-time result, per account.
+  - Tabs are grouped: Accounts, Market and trades, AI and news, Setup.
 - **1.2.0:** the AI sells sooner in a falling trend and shows a plan for each holding.
   - Its stop now rises with the price, and a slow slide triggers a sell.
   - Each holding shows "Hold" or "Sell soon" with a rough number of days, a sell target, the
@@ -308,6 +314,41 @@ politics stories, but only if a news source you have added supplies them.
 Read it with care. It shows patterns, not causes. Anything under 20 trades is marked "not enough
 data", and even a "possible pattern" can be luck. The AI does not read this log or change its rules
 from it. Any change to the strategy is a decision for you to make.
+
+## Sectors and market links
+
+Every stock has a sector, such as "Oil & gas producers" or "AI chips & semiconductors". Known
+tickers get one from a built-in list in `paper_trader/network.py`; anything else is
+"Unclassified". Change a sector on the Watchlist tab: select the row, pick a sector, click Set
+sector. Your choice is saved and overrides the built-in list.
+
+The **Market links** tab lists 30 links, each one a well-known tendency such as "oil price ↑:
+oil producers ↑, airlines ↓" or "major new AI model launched: AI chips ↑, software ↓". They are
+tendencies, not tested rules.
+
+How they are used:
+
+1. Headlines from the news lookback window (48 hours by default) are matched to each link by
+   keywords in the **headline only**. Summaries matched too loosely in testing.
+2. Price links (marked ↑/↓) read the headline's verbs: "surges" counts as up and "slumps" as
+   down, and a fall swaps the up and down lists. Unclear headlines are skipped.
+3. Each stock gets a **net push**: +1 for each link pointing up and -1 for each pointing down.
+   Each link counts once, so twenty oil headlines are one vote.
+4. For the AI, the winning side becomes news signals: a negative push can veto a buy, and a
+   positive push raises confidence. Links never start a trade. Turn them off in Settings
+   ("Use market links").
+
+The lower table shows every stock you and the AI own, with its net push and the links behind it.
+Links 2 and 30 are information only. CDRs are currency-hedged, and an election's effect depends
+on the winner.
+
+## Gain by ticker
+
+Trade log → **Gain by ticker** shows, for each account side by side, every ticker ever traded:
+buys, sells, shares still held, realized gain (all finished sales added up), the open gain on
+shares still held, and the total. For example, a GOOG sale at a 100 loss followed by one at a
+60 gain gives -40. Green rows are ahead overall, and red rows are behind. Imported holdings are
+not included.
 
 ## News and signals
 

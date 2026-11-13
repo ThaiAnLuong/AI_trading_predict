@@ -339,6 +339,61 @@ class UiSmoke(unittest.TestCase):
         self.assertTrue(shown, "the demo AI holding should have a plan")
         self.assertLessEqual(shown, set(ai.positions))
 
+    def test_tabs_are_grouped_and_the_buttons_switch_pages(self):
+        from paper_trader.ui.app import GROUPS
+        names = [[title for title, _ in pages] for _, pages in GROUPS]
+        self.assertEqual(names, [["My account", "AI account"],
+                                 ["Compare", "Watchlist", "Trade log"],
+                                 ["AI decisions", "AI lessons", "News", "Market links"],
+                                 ["Settings", "About and data"]])
+        buttons = [w for w in self.all_widgets(self.app)
+                   if isinstance(w, ttk.Radiobutton) and str(w.cget("style")) == "Tab.Toolbutton"]
+        self.assertEqual([b.cget("text") for b in buttons], sum(names, []))
+        buttons[4].invoke()  # Trade log
+        self.pump()
+        self.assertEqual(self.app.book.index(self.app.book.select()), 4)
+        self.app.book.select(0)  # choosing a page elsewhere moves the highlight
+        self.pump()
+        self.assertEqual(self.app.page.get(), 0)
+        self.assertEqual(self.errors, [])
+
+    def all_widgets(self, widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from self.all_widgets(child)
+
+    def test_sector_column_in_holdings_and_watchlist(self):
+        from paper_trader.network import SECTORS
+        for table in (self.tab(dashboard.MyAccountTab).holdings,
+                      self.tab(dashboard.AiAccountTab).holdings,
+                      self.tab(tabs.WatchlistTab).table):
+            table.master.master.refresh() if hasattr(table.master.master, "refresh") else None
+            for value, _ in self.tags_by_value(table, "Sector"):
+                self.assertIn(value, SECTORS)
+
+    def test_market_links_tab(self):
+        tab = self.tab(tabs.LinksTab)
+        tab.refresh()
+        self.assertEqual(len(tab.links.tree.get_children()), 30)
+        tab.links.tree.selection_set("1")
+        self.pump()
+        self.assertIn("Oil price", tab.detail.get("1.0", "end"))
+        ai = load_state(self.ctx.db.conn(), "AI", self.ctx.settings())
+        my = load_state(self.ctx.db.conn(), "MY", self.ctx.settings())
+        expected = {f"AI:{t}" for t in ai.positions} | {f"MY:{t}" for t in
+                                                       set(my.positions) | set(my.imported)}
+        self.assertEqual(set(tab.owned.tree.get_children()), expected)
+
+    def test_gain_by_ticker_page(self):
+        tab = self.tab(tabs.TradeLogTab)
+        tab.refresh()
+        self.assertEqual([tab.pages.tab(i, "text") for i in range(2)], ["All trades", "Gain by ticker"])
+        my = tab.gain_tables["MY"].tree
+        self.assertTrue(my.get_children(), "demo has My account trades")
+        self.check_sign_colours(self.tags_by_value(tab.gain_tables["MY"], "Total"))
+        self.check_sign_colours(self.tags_by_value(tab.gain_tables["AI"], "Total"))
+        self.assertIn("All together", tab.gain_notes["MY"].cget("text"))
+
     def test_row_colours_follow_the_theme(self):
         table = self.tab(tabs.TradeLogTab).table
         for dark, palette in ((False, common.LIGHT), (True, common.DARK)):

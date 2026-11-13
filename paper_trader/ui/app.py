@@ -19,10 +19,19 @@ from .admin import AboutTab, SettingsTab
 from .common import DEMO_BANNER, FONT_BOLD, PAPER_BANNER, apply_theme
 from .dashboard import AiAccountTab, MyAccountTab
 from .lessons import LessonsTab
-from .tabs import CompareTab, DecisionsTab, NewsTab, TradeLogTab, WatchlistTab
+from .tabs import CompareTab, DecisionsTab, LinksTab, NewsTab, TradeLogTab, WatchlistTab
 
 TIMER_MS = 60_000
 POLL_MS = 250
+# Tabs in groups, shown side by side with a gap between groups.
+GROUPS = (
+    ("Accounts", (("My account", MyAccountTab), ("AI account", AiAccountTab))),
+    ("Market and trades", (("Compare", CompareTab), ("Watchlist", WatchlistTab),
+                           ("Trade log", TradeLogTab))),
+    ("AI and news", (("AI decisions", DecisionsTab), ("AI lessons", LessonsTab),
+                     ("News", NewsTab), ("Market links", LinksTab))),
+    ("Setup", (("Settings", SettingsTab), ("About and data", AboutTab))),
+)
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 
 
@@ -60,17 +69,28 @@ class App(tk.Tk):
         self.status = ttk.Label(bottom, style="Muted.TLabel")
         self.status.pack(side="left")
 
-        self.book = ttk.Notebook(self)
-        self.book.pack(fill="both", expand=True, padx=8, pady=(6, 0))
+        # The notebook's own tab strip is hidden; the grouped buttons above choose the page.
+        bar = ttk.Frame(self, padding=(8, 6, 8, 0))
+        bar.pack(fill="x")
+        self.book = ttk.Notebook(self, style="Hidden.TNotebook")
+        self.book.pack(fill="both", expand=True, padx=8, pady=(4, 0))
+        self.page = tk.IntVar(value=0)
         self.tabs = []
-        for title, cls in (("My account", MyAccountTab), ("AI account", AiAccountTab),
-                           ("Compare", CompareTab), ("Watchlist", WatchlistTab),
-                           ("Trade log", TradeLogTab), ("AI decisions", DecisionsTab),
-                           ("AI lessons", LessonsTab), ("News", NewsTab), ("Settings", SettingsTab), ("About and data", AboutTab)):
-            tab = cls(self.book, self)
-            self.book.add(tab, text=title)
-            self.tabs.append(tab)
-        self.book.bind("<<NotebookTabChanged>>", lambda _e: self.refresh_visible())
+        for g, (group, pages) in enumerate(GROUPS):
+            box = ttk.Frame(bar)
+            box.pack(side="left", padx=(0 if g == 0 else 26, 0), anchor="s")
+            ttk.Label(box, text=group, style="Group.TLabel").pack(anchor="w")
+            row = ttk.Frame(box)
+            row.pack(anchor="w")
+            for title, cls in pages:
+                index = len(self.tabs)
+                tab = cls(self.book, self)
+                self.book.add(tab, text=title)
+                self.tabs.append(tab)
+                ttk.Radiobutton(row, text=title, value=index, variable=self.page,
+                                style="Tab.Toolbutton",
+                                command=lambda i=index: self.book.select(i)).pack(side="left")
+        self.book.bind("<<NotebookTabChanged>>", self.on_page_changed)
 
         self.worker = Worker(ctx, lambda event: self.events.put(event))
         self.worker.start()
@@ -81,6 +101,10 @@ class App(tk.Tk):
         self.after(POLL_MS, self.poll)
         self.after(TIMER_MS, self.tick)
         self.after(3000, self.daily_backup)
+
+    def on_page_changed(self, _event=None) -> None:
+        self.page.set(self.book.index(self.book.select()))
+        self.refresh_visible()
 
     def report_callback_exception(self, exc, value, tb):
         detail = "".join(traceback.format_exception(exc, value, tb))

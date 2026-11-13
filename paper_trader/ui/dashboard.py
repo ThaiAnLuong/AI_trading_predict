@@ -11,14 +11,15 @@ from ..money import D, fmt_money, fmt_pct, fmt_price, fmt_qty, fmt_signed
 from ..performance import load_snapshots, period_returns
 from ..service import refresh_one
 from ..settings import save_settings
+from ..network import sector_for, sector_map
 from ..symbols import normalize_ticker
 from ..timeutil import local_str, to_local
 from ..valuation import account_view, budget, imported_views
 from .common import (Table, Tile, bold_num, colors, form_row, show_error, show_info,
                      sign_tag, text_box)
 
-HOLDING_COLUMNS = [("Ticker", 90), ("Qty", 60), ("Ccy", 45), ("Avg cost", 85), ("Ref price", 85),
-                   ("Exchange", 80), ("Price time", 125), ("Data", 130), ("Value CAD", 100),
+HOLDING_COLUMNS = [("Ticker", 90), ("Sector", 150), ("Qty", 60), ("Ccy", 45), ("Avg cost", 85),
+                   ("Ref price", 85), ("Price time", 125), ("Data", 130), ("Value CAD", 100),
                    ("Unrealized CAD", 110)]
 
 
@@ -94,9 +95,10 @@ class AccountTab(ttk.Frame):
         self.warning.configure(text=(
             f"Partial valuation, no current price for: {', '.join(view.missing)}"
             if view.missing else ""))
+        sectors = sector_map(conn)
         self.holdings.set_rows([(h.ticker, (
-            h.ticker, fmt_qty(h.quantity), h.currency, fmt_price(h.avg_cost), bold_num(fmt_price(h.price)),
-            h.exchange or "?", local_str(h.quote_ts), h.status,
+            h.ticker, sector_for(h.ticker, sectors), fmt_qty(h.quantity), h.currency,
+            fmt_price(h.avg_cost), bold_num(fmt_price(h.price)), local_str(h.quote_ts), h.status,
             f"{h.market_value:,.2f}" if h.market_value is not None else "n/a",
             f"{h.unrealized:+,.2f}" if h.unrealized is not None else "n/a"),
             sign_tag(h.unrealized)) for h in view.holdings])
@@ -111,7 +113,7 @@ class MyAccountTab(AccountTab):
         ttk.Label(body, text="Imported holdings: tracked separately, excluded from account value, "
                   "returns, cash and the AI comparison", style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", pady=(8, 0))
-        self.imported = Table(body, [("Ticker", 90), ("Qty", 60), ("Ccy", 45), ("Avg cost", 85),
+        self.imported = Table(body, [("Ticker", 90), ("Sector", 150), ("Qty", 60), ("Ccy", 45), ("Avg cost", 85),
                                      ("Ref price", 85), ("Value (own ccy)", 110),
                                      ("Unrealized (own ccy)", 130), ("Data", 130)], height=3)
         self.imported.grid(row=3, column=0, sticky="nsew")
@@ -169,8 +171,9 @@ class MyAccountTab(AccountTab):
         conn = self.ctx.db.conn()
         s = self.ctx.settings()
         rows = imported_views(conn, view.state, s, self.ctx.clock())
+        sectors = sector_map(conn)
         self.imported.set_rows([(h.ticker, (
-            h.ticker, fmt_qty(h.quantity), h.currency, fmt_price(h.avg_cost), bold_num(fmt_price(h.price)),
+            h.ticker, sector_for(h.ticker, sectors), fmt_qty(h.quantity), h.currency, fmt_price(h.avg_cost), bold_num(fmt_price(h.price)),
             f"{h.market_value:,.2f}" if h.market_value is not None else "n/a",
             f"{h.unrealized:+,.2f}" if h.unrealized is not None else "n/a", h.status),
             sign_tag(h.unrealized)) for h in rows])

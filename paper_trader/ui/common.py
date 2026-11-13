@@ -82,6 +82,15 @@ def _style(root: tk.Misc, c: dict) -> None:
     style.configure("TNotebook.Tab", background=c["button"], foreground=c["ink"], padding=(10, 4))
     style.map("TNotebook.Tab", background=[("selected", c["bg"]), ("active", c["button_active"])],
               lightcolor=[("selected", c["bg"])])
+    # Hidden tab strip plus grouped tab buttons (1.3.0).
+    style.layout("Hidden.TNotebook.Tab", [])
+    style.configure("Hidden.TNotebook", background=c["bg"], borderwidth=0)
+    style.configure("Tab.Toolbutton", background=c["button"], foreground=c["ink"], padding=(12, 5),
+                    relief="flat", borderwidth=1, bordercolor=c["border"], anchor="center")
+    style.map("Tab.Toolbutton",
+              background=[("selected", c["select"]), ("active", c["button_active"])],
+              foreground=[("selected", c["ink"])], relief=[("selected", "flat")])
+    style.configure("Group.TLabel", foreground=c["muted"], font=("Segoe UI", 8, "bold"))
     style.configure("Treeview", background=c["surface"], fieldbackground=c["surface"],
                     foreground=c["ink"], rowheight=26, bordercolor=c["border"])
     style.map("Treeview", background=[("selected", c["select"])],

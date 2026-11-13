@@ -12,6 +12,7 @@ from decimal import ROUND_DOWN, Decimal
 from ..context import AppContext
 from ..engine import TradeRejected, TradeRequest, slippage_for
 from ..money import CENT, D, QTY_STEP, ZERO
+from ..network import link_signals, recent_hits, sector_for, sector_map
 from ..news.signals import qualifying_signals
 from ..settings import Settings
 from ..timeutil import from_iso, local_date, period_start, to_iso
@@ -44,6 +45,21 @@ class Cycle:
         self.id = uuid.uuid4().hex[:12]
         self.conn = ctx.db.conn()
         self.executed = 0
+        self._hits = None
+        self.sectors = sector_map(self.conn)
+
+    def hits(self):
+        """Market-link matches in the news window, worked out once per cycle."""
+        if self._hits is None:
+            self._hits = (recent_hits(self.conn, self.now, self.s.news_lookback_hours)
+                          if self.s.market_links_enabled else [])
+        return self._hits
+
+    def signals(self, ticker: str):
+        found = qualifying_signals(self.conn, ticker, self.now, self.s.news_lookback_hours)
+        seen = {x.id for x in found}
+        sector = sector_for(ticker, self.sectors)
+        return found + [x for x in link_signals(self.hits(), ticker, sector) if x.id not in seen]
 
     def tickers(self) -> list[str]:
         held = set(load_state(self.conn, "AI", self.s).positions)
@@ -128,8 +144,7 @@ class Cycle:
         return TickerInput(
             ticker, price, quote["currency"], to_float(b["close"] for b in bars),
             to_float(b["volume"] or 0 for b in bars), position,
-            qualifying_signals(self.conn, ticker, self.now, self.s.news_lookback_hours),
-            D(self.s.stop_loss_pct), peak, buys, days_since_sell)
+            self.signals(ticker), D(self.s.stop_loss_pct), peak, buys, days_since_sell)
 
     def _save_plan(self, ticker: str, plan: Plan | None, quote) -> None:
         """Keep the plan for a ticker the AI still holds; drop it once the holding is gone."""

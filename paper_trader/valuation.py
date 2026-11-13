@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from .ledger import AccountState, Position, period_used, replay
+from .ledger import AccountState, Position, period_used, realized_by_sale, replay
 from .money import D, ZERO
 from .settings import Settings
 from .symbols import currency_for
@@ -191,3 +191,45 @@ def budget(conn: sqlite3.Connection, account: str, s: Settings, now: datetime) -
     cash = replay(s.start, trades).cash
     return Budget(s.limit, used, remaining, min(cash, remaining), s.reset_period,
                   next_reset(now, s.reset_period))
+
+
+@dataclass
+class TickerTotal:
+    """All-time result for one ticker in one account (trading money only, in CAD)."""
+    ticker: str
+    buys: int = 0
+    sells: int = 0
+    realized: Decimal = ZERO          # every finished sale added up
+    held: Decimal = ZERO              # shares still owned
+    unrealized: Decimal | None = ZERO  # open shares at today's price; None if no price
+
+    @property
+    def total(self) -> Decimal | None:
+        return None if self.unrealized is None else self.realized + self.unrealized
+
+
+def ticker_totals(conn: sqlite3.Connection, account: str, s: Settings,
+                  now: datetime) -> list[TickerTotal]:
+    """Each ticker's buys, sales and gain over all time. Imported holdings are left out,
+    as they are everywhere else in the account figures.
+
+    Example: bought GOOG, sold at a 100 loss; bought again, sold at a 60 gain: -40.
+    """
+    trades = load_trades(conn, account)
+    gains = realized_by_sale(s.start, trades)
+    totals: dict[str, TickerTotal] = {}
+    for t in trades:
+        if t["sleeve"] != "TRADING":
+            continue
+        row = totals.setdefault(t["ticker"], TickerTotal(t["ticker"]))
+        if t["side"] == "BUY":
+            row.buys += 1
+        elif t["side"] == "SELL":
+            row.sells += 1
+            row.realized += gains[t["id"]][0]
+    view = account_view(conn, account, s, now)
+    for h in view.holdings:
+        row = totals.setdefault(h.ticker, TickerTotal(h.ticker))
+        row.held = h.quantity
+        row.unrealized = h.unrealized
+    return sorted(totals.values(), key=lambda r: r.ticker)

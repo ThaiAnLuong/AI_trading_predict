@@ -54,6 +54,7 @@ class Settings:
     stop_loss_pct: str = "8"
     min_confidence: str = "0.55"
     news_lookback_hours: int = 48
+    market_links_enabled: bool = True  # 1.3.0: sector links from headlines
     llm_review_enabled: bool = False
     llm_model: str = "claude-opus-5-5"
     llm_max_reviews_per_day: int = 10
