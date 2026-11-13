@@ -13,7 +13,8 @@ from unittest import mock
 
 from paper_trader import dataops, service
 from paper_trader.ai.llm_review import Review, ReviewUnavailable, parse_review
-from paper_trader.ai.runner import run_cycle
+from paper_trader.ai import strategy as strategy_module
+from paper_trader.ai.runner import Cycle, run_cycle
 from paper_trader.ai.strategy import MomentumNewsStrategy, TickerInput
 from paper_trader.config import KEYS_FILE, get_paths, load_api_keys
 from paper_trader.context import AppContext
@@ -74,6 +75,86 @@ class Strategy(unittest.TestCase):
 
     def test_short_history_holds(self):
         self.assertEqual(self.s.evaluate(data(closes=rising_closes(20))).action, "HOLD")
+
+
+def held(cost, qty="10"):
+    return Position("RY.TO", "CAD", D(qty), D(cost), D(cost) * D(qty))
+
+
+def slow_slide_closes():
+    """40 days up, then 20 days of small drops: never more than 2% in 5 days."""
+    return rising_closes(40, 100, 0.5) + [119.5 - 0.3 * (i + 1) for i in range(20)]
+
+
+class PlanRules(unittest.TestCase):
+    """Version 1.2.0: exits for slow declines, a rising stop, and the plan for each holding."""
+    s = MomentumNewsStrategy()
+
+    def held_data(self, price, closes, cost, peak=None, buys=1):
+        return TickerInput("RY.TO", D(price), "CAD", closes, [1000.0] * len(closes), held(cost),
+                           [], D("8"), D(peak) if peak else None, buys)
+
+    def test_slow_slide_is_sold(self):
+        closes = slow_slide_closes()
+        result = self.s.evaluate(self.held_data("113.3", closes, "112", peak="119.5"))
+        self.assertGreater(result.metrics["momentum_5d_pct"], -2)  # the old rule would hold
+        self.assertEqual(result.action, "SELL")
+        self.assertIn("slow slide", result.explanation)
+
+    def test_stop_rises_with_the_price(self):
+        # Bought at 100, went to 120, now 110: the old fixed stop (92) would still hold.
+        result = self.s.evaluate(self.held_data("110", [], "100", peak="120"))
+        self.assertEqual(result.action, "SELL")
+        self.assertIn("Trailing stop", result.explanation)
+        self.assertIn("110.40", result.explanation)
+
+    def test_no_peak_keeps_the_fixed_stop(self):
+        result = self.s.evaluate(self.held_data("93", [], "100", peak="100"))
+        self.assertEqual(result.action, "HOLD")
+        self.assertEqual(result.plan.stop, D("92.00"))
+        self.assertFalse(result.plan.trailing)
+
+    def test_target_reached_sells(self):
+        result = self.s.evaluate(self.held_data("135", rising_closes(), "110", peak="135"))
+        self.assertEqual(result.action, "SELL")
+        self.assertIn("Target reached", result.explanation)
+        self.assertEqual(result.plan.target, D("127.60"))  # 110 + 2 x 8%
+
+    def test_buys_more_on_a_dip_in_an_uptrend_once(self):
+        result = self.s.evaluate(self.held_data("125.5", rising_closes(), "110", peak="125.5"))
+        self.assertEqual(result.action, "BUY")
+        self.assertIn("Buy more", result.explanation)
+        self.assertEqual(result.plan.add_at, D("126.00"))
+        again = self.s.evaluate(self.held_data("125.5", rising_closes(), "110", peak="125.5",
+                                               buys=2))
+        self.assertEqual(again.action, "HOLD")
+        self.assertIsNone(again.plan.add_at)
+
+    def test_never_buys_more_below_cost(self):
+        result = self.s.evaluate(self.held_data("125.5", rising_closes(), "126", peak="126"))
+        self.assertNotEqual(result.action, "BUY")
+
+    def test_weak_holding_is_marked_sell_soon(self):
+        flat = [100.0] * 60
+        result = self.s.evaluate(self.held_data("99.5", flat, "100", peak="100"))
+        self.assertEqual(result.action, "HOLD")
+        self.assertEqual(result.plan.label(), "Sell soon (1-3 days)")
+
+    def test_new_buy_carries_a_hold_plan_with_days(self):
+        result = self.s.evaluate(data())
+        self.assertEqual(result.action, "BUY")
+        plan = result.plan
+        self.assertEqual((plan.target, plan.stop), (D("156.60"), D("124.20")))
+        # 20-day pace: (135 - 120) / 20 = 0.75 a day; 21.6 to go = about 29 days.
+        self.assertEqual(plan.label(), "Hold (20-43 days)")
+        self.assertIn("target 156.60", plan.short())
+
+    def test_no_new_buy_right_after_selling(self):
+        recent = TickerInput("RY.TO", D("135"), "CAD", rising_closes(), [1000.0] * 60, None, [],
+                             D("8"), days_since_sell=1)
+        result = self.s.evaluate(recent)
+        self.assertEqual(result.action, "HOLD")
+        self.assertIn("sold less than", result.explanation)
 
 
 class FakeMarket(MarketDataProvider):
@@ -191,6 +272,7 @@ class AiCycle(AppCase):
         self.assertEqual(self.decisions()[-1]["status"], "PAUSED")
         self.assertIn("stale", self.decisions()[-1]["explanation"])
 
+    @mock.patch.object(strategy_module, "REENTRY_DAYS", 0)  # test the order guard, not the wait
     def test_restart_does_not_repeat_an_order(self):
         service.refresh_fx(self.ctx)
         service.refresh_market(self.ctx)
@@ -673,3 +755,38 @@ class NoBrokerage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AiPlans(AppCase):
+    def plans(self):
+        return self.ctx.db.conn().execute("SELECT * FROM ai_plans").fetchall()
+
+    def test_buy_saves_a_plan_and_a_sale_removes_it(self):
+        self.update()
+        self.assertEqual(len(self.trades()), 1)
+        self.assertIn("Plan: Hold (", self.trades()[0]["reason"])
+        (plan,) = self.plans()
+        self.assertEqual(plan["ticker"], "RY.TO")
+        self.assertTrue(plan["plan"].startswith("Hold"))
+        self.assertEqual(json.loads(self.decisions()[0]["data_sources"])["plan"]["plan"],
+                         plan["plan"])
+        self.market.prices["RY.TO"] = "100"  # below the stop
+        self.clock.advance(minutes=31)
+        self.update()
+        self.assertEqual([t["side"] for t in self.trades()], ["BUY", "SELL"])
+        self.assertEqual(self.plans(), [])
+
+    def test_reset_clears_plans(self):
+        self.update()
+        dataops.reset_experiment(self.ctx)
+        self.assertEqual(self.plans(), [])
+
+    def test_buying_more_is_not_blocked_by_the_position_count(self):
+        self.configure(max_positions=1)
+        self.update()
+        quote = self.ctx.db.conn().execute("SELECT * FROM quotes WHERE ticker='RY.TO'").fetchone()
+        cycle = Cycle(self.ctx)
+        qty, why_not = cycle._size("RY.TO", quote)
+        self.assertIsNone(why_not)
+        self.assertGreater(qty, 0)
+        self.assertIn("maximum positions", cycle._size("TD.TO", quote)[1])

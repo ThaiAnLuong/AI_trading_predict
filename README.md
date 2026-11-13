@@ -28,6 +28,12 @@ the app is closed, AI trading, price updates and snapshots stop.
 Versions are numbered `A.B.C`: **A** for a major change, **B** for a change to a function, method or
 calculation, and **C** for UX/UI and quality work.
 
+- **1.2.0:** the AI sells sooner in a falling trend and shows a plan for each holding.
+  - Its stop now rises with the price, and a slow slide triggers a sell.
+  - Each holding shows "Hold" or "Sell soon" with a rough number of days, a sell target, the
+    stop and a buy-more price.
+  - The ticker list in My account shows owned tickers in yellow, with the amount on the right.
+  - Reference prices are bold in every table.
 - **1.1.1:** coloured rows. Holdings are green in profit and red at a loss. In the trade log, sales
   are green or red by their gain, with a new Realized column. In the watchlist, tickers the AI
   account holds are yellow, with an "AI holds" column.
@@ -222,15 +228,40 @@ last 5 days is available. If you turn the setting back on, existing US positions
 
 ## AI strategy
 
-The AI account runs `momentum+news rules v1`, a transparent rules-based strategy in
+The AI account runs `momentum+news rules v2` (since 1.2.0), a transparent rules-based strategy in
 `paper_trader/ai/strategy.py`. It is not a prediction engine.
 
-1. **Stop-loss:** sell if the price is at or below the stop level under average cost.
-2. **Exit:** sell if the price is below its 20-day average and down over 2% in 5 days.
-3. **Entry:** consider a buy only if the price is above its 20-day average, the 20-day is above the
-   50-day, and 5-day and 20-day momentum are positive.
-4. **News:** negative signals veto a buy, and positive signals raise confidence. News can never
+1. **Stop:** sell if the price falls to the stop. The stop starts at the stop-loss % below average
+   cost, then rises to that % below the highest price since buying. Example with 8%: bought at
+   100, rose to 120, the stop is now 110.40 instead of 92.
+2. **Target:** sell when the price reaches cost plus twice the stop-loss % (cost 100 → 116).
+3. **Trend exit:** sell when the price is below its 20-day average and either
+   - it fell over 2% in 5 days, or
+   - the 20-day average is itself falling and the price is down over 20 days (a slow slide).
+4. **Entry:** consider a buy only if the price is above its 20-day average, the 20-day is above the
+   50-day, and 5-day and 20-day momentum are positive. No new buy of a ticker within 3 days of
+   selling it.
+5. **Buy more:** once per holding, when the price dips to within 1% of its 20-day average while
+   the trend holds (above the 20- and 50-day averages, up over 20 days). Never below its own
+   average cost, so it never adds to a loser.
+6. **News:** negative signals veto a buy, and positive signals raise confidence. News can never
    start a trade by itself.
+
+### The AI plan
+
+The AI account tab lists a plan for each holding, updated at every price refresh:
+
+| Column | Meaning |
+|---|---|
+| Plan | **Hold (N-M days)** while the trend holds, or **Sell soon (1-3 days)** when the price is below its 20-day average or within 2% of the stop |
+| Sell target | the take-profit price from rule 2 |
+| Stop | the price from rule 1; "(raised)" once it has moved up |
+| Buy more at | the price from rule 5, or "not now" |
+
+The days are trading days, estimated from the last 20 days' pace to the target. They are
+rough, rule-based estimates, not forecasts. The plan is also saved with every AI buy (in the
+trade reason) and every decision (in its data sources). While prices are paused, the last plan
+stays with its time.
 
 Each buy is sized to fit every limit, then goes through the same engine as a manual trade.
 Configurable limits: maximum trade size, buys per day, positions, exposure, stop-loss and minimum
@@ -394,10 +425,3 @@ tests/             Run with: python -m unittest discover -s tests -t .
 source API/        api_keys.env (yours, private) and a blank template
 ```
 
-## Publishing to GitHub
-
-The owner's working folder is private. Only its `PUBLIC` folder goes to GitHub, and the app itself
-always runs from the working folder. To refresh it, run `sync_public.bat`. It copies an approved
-list of files, removes anything no longer in that list, and stops without copying if it finds a key.
-Keys, the `data` folder and saved Yahoo responses are left out. Someone who downloads the code gets
-their own `data` folder the first time they run it, and adds their own keys.

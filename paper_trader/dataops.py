@@ -166,7 +166,7 @@ def reset_experiment(ctx: AppContext, new_starting_balance: str | None = None) -
     now = to_iso(ctx.clock())
     with ctx.db.tx() as conn:
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('reset_in_progress', '1')")
-        for table in ("trades", "snapshots", "ai_decisions", "ai_decision_news"):
+        for table in ("trades", "snapshots", "ai_decisions", "ai_decision_news", "ai_plans"):
             conn.execute(f"DELETE FROM {table}")
         conn.execute("DELETE FROM meta WHERE key = 'reset_in_progress'")
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('experiment_started_at', ?)",

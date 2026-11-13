@@ -257,6 +257,88 @@ class UiSmoke(unittest.TestCase):
             self.assertEqual(tuple(tree.item(iid, "tags") or ()), expected, iid)
             self.assertEqual(tree.item(iid, "values")[held], "yes" if iid in ai else "")
 
+    def test_reference_prices_are_bold_in_every_table(self):
+        my, ai = self.tab(dashboard.MyAccountTab), self.tab(dashboard.AiAccountTab)
+        checks = [(my.holdings, "Ref price"), (my.imported, "Ref price"), (ai.holdings, "Ref price"),
+                  (self.tab(tabs.WatchlistTab).table, "Ref price"),
+                  (self.tab(tabs.TradeLogTab).table, "Ref price"),
+                  (self.tab(tabs.DecisionsTab).table, "Ref price")]
+        for tab in self.app.tabs:
+            tab.refresh()
+        seen = 0
+        for table, column in checks:
+            for value, _ in self.tags_by_value(table, column):
+                text = str(value)
+                if text in ("n/a", "-"):
+                    continue
+                seen += 1
+                self.assertFalse(any(ch.isascii() and ch.isdigit() for ch in text), text)
+                self.assertEqual(common.plain_num(text), common.plain_num(text).strip())
+        self.assertGreater(seen, 0)
+
+    def test_bold_digits_round_trip(self):
+        self.assertEqual(common.plain_num(common.bold_num("1,234.50 CAD")), "1,234.50 CAD")
+        self.assertNotEqual(common.bold_num("12"), "12")
+
+    def test_ticker_list_shows_amount_owned_and_highlights_it(self):
+        tab = self.tab(dashboard.MyAccountTab)
+        tab.refresh()
+        owned = tab.owned
+        self.assertTrue(owned, "demo My account should hold something")
+        values = list(tab.ticker_box["values"])
+        for line in values:
+            ticker = line.split()[0]
+            if ticker in owned:
+                self.assertTrue(line.endswith(owned[ticker]), line)
+            else:
+                self.assertEqual(line, ticker)
+        # Picking a line keeps only the ticker.
+        line = next(v for v in values if v.split()[0] in owned)
+        tab.ticker.set(line)
+        tab.pick_ticker()
+        self.assertEqual(tab.ticker.get(), line.split()[0])
+        self.assertEqual(tab.request().ticker, line.split()[0])
+        # Opening the list colours the owned lines.
+        tab.mark_owned()
+        box = tab.listbox()
+        tab.ticker_box.tk.call(box, "delete", 0, "end")
+        for v in values:
+            tab.ticker_box.tk.call(box, "insert", "end", v)
+        self.pump()
+        for i, v in enumerate(values):
+            colour = str(tab.ticker_box.tk.call(box, "itemcget", i, "-background"))
+            expected = common.colors()["held_bg"] if v.split()[0] in owned else ""
+            self.assertEqual(colour, expected, v)
+
+    def test_dropdown_amounts(self):
+        self.assertEqual(dashboard.ticker_choice("RY.TO", None), "RY.TO")
+        line = dashboard.ticker_choice("RY.TO", "12")
+        self.assertEqual(len(line), dashboard.CHOICE_WIDTH)
+        self.assertTrue(line.startswith("RY.TO ") and line.endswith(" 12"))
+
+    def test_plan_rows(self):
+        base = {"ts": "2026-11-10T15:00:00.000000Z", "target": "12.00", "stop": "9.00",
+                "trailing": 1, "add_at": None, "why": "test", "price": "10", "currency": "CAD"}
+        rows = [dict(base, ticker="A.TO", plan="Sell soon (1-3 days)"),
+                dict(base, ticker="B.TO", plan="Hold (2-5 days)", trailing=0, add_at="9.50"),
+                dict(base, ticker="GONE.TO", plan="Hold (2-5 days)")]
+        out = {iid: (values, tag) for iid, values, tag in dashboard.plan_rows(rows, {"A.TO", "B.TO"})}
+        self.assertEqual(set(out), {"A.TO", "B.TO"})  # sold tickers are not shown
+        values, tag = out["A.TO"]
+        self.assertEqual((values[1], values[3], values[4], tag),
+                         ("Sell soon (1-3 days)", "9.00 (raised)", "not now", "loss"))
+        values, tag = out["B.TO"]
+        self.assertEqual((values[3], values[4], tag), ("9.00", "9.50", ""))
+        self.assertEqual(common.plain_num(values[5]), "10.0000")
+
+    def test_ai_tab_shows_plans_only_for_holdings(self):
+        tab = self.tab(dashboard.AiAccountTab)
+        tab.refresh()
+        ai = load_state(self.ctx.db.conn(), "AI", self.ctx.settings())
+        shown = set(tab.plans.tree.get_children())
+        self.assertTrue(shown, "the demo AI holding should have a plan")
+        self.assertLessEqual(shown, set(ai.positions))
+
     def test_row_colours_follow_the_theme(self):
         table = self.tab(tabs.TradeLogTab).table
         for dark, palette in ((False, common.LIGHT), (True, common.DARK)):

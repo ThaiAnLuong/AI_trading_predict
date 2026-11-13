@@ -14,7 +14,8 @@ from ..settings import save_settings
 from ..symbols import normalize_ticker
 from ..timeutil import local_str, to_local
 from ..valuation import account_view, budget, imported_views
-from .common import Table, Tile, form_row, show_error, show_info, sign_tag, text_box
+from .common import (Table, Tile, bold_num, colors, form_row, show_error, show_info,
+                     sign_tag, text_box)
 
 HOLDING_COLUMNS = [("Ticker", 90), ("Qty", 60), ("Ccy", 45), ("Avg cost", 85), ("Ref price", 85),
                    ("Exchange", 80), ("Price time", 125), ("Data", 130), ("Value CAD", 100),
@@ -94,7 +95,7 @@ class AccountTab(ttk.Frame):
             f"Partial valuation, no current price for: {', '.join(view.missing)}"
             if view.missing else ""))
         self.holdings.set_rows([(h.ticker, (
-            h.ticker, fmt_qty(h.quantity), h.currency, fmt_price(h.avg_cost), fmt_price(h.price),
+            h.ticker, fmt_qty(h.quantity), h.currency, fmt_price(h.avg_cost), bold_num(fmt_price(h.price)),
             h.exchange or "?", local_str(h.quote_ts), h.status,
             f"{h.market_value:,.2f}" if h.market_value is not None else "n/a",
             f"{h.unrealized:+,.2f}" if h.unrealized is not None else "n/a"),
@@ -111,7 +112,7 @@ class MyAccountTab(AccountTab):
                   "returns, cash and the AI comparison", style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", pady=(8, 0))
         self.imported = Table(body, [("Ticker", 90), ("Qty", 60), ("Ccy", 45), ("Avg cost", 85),
-                                     ("Price", 85), ("Value (own ccy)", 110),
+                                     ("Ref price", 85), ("Value (own ccy)", 110),
                                      ("Unrealized (own ccy)", 130), ("Data", 130)], height=3)
         self.imported.grid(row=3, column=0, sticky="nsew")
         self.imported_note = ttk.Label(body, style="Muted.TLabel")
@@ -126,7 +127,10 @@ class MyAccountTab(AccountTab):
         self.quantity = tk.StringVar()
         self.reason = tk.StringVar()
         self.sleeve = tk.StringVar(value="TRADING")
-        self.ticker_box = ttk.Combobox(ticket, textvariable=self.ticker, width=16)
+        self.ticker_box = ttk.Combobox(ticket, textvariable=self.ticker, width=22,
+                                       postcommand=self.mark_owned)
+        self.ticker_box.bind("<<ComboboxSelected>>", self.pick_ticker)
+        self.owned: dict[str, str] = {}
         form_row(ticket, 0, "Ticker", self.ticker_box)
         sides = ttk.Frame(ticket)
         for text in ("BUY", "SELL"):
@@ -166,7 +170,7 @@ class MyAccountTab(AccountTab):
         s = self.ctx.settings()
         rows = imported_views(conn, view.state, s, self.ctx.clock())
         self.imported.set_rows([(h.ticker, (
-            h.ticker, fmt_qty(h.quantity), h.currency, fmt_price(h.avg_cost), fmt_price(h.price),
+            h.ticker, fmt_qty(h.quantity), h.currency, fmt_price(h.avg_cost), bold_num(fmt_price(h.price)),
             f"{h.market_value:,.2f}" if h.market_value is not None else "n/a",
             f"{h.unrealized:+,.2f}" if h.unrealized is not None else "n/a", h.status),
             sign_tag(h.unrealized)) for h in rows])
@@ -176,12 +180,45 @@ class MyAccountTab(AccountTab):
             text=f"Imported sales: realized {realized}; proceeds kept outside trading cash: {proceeds}"
             if realized else "")
         tickers = {r["ticker"] for r in conn.execute("SELECT ticker FROM watchlist")}
-        self.ticker_box["values"] = sorted(tickers | set(view.state.positions) | set(view.state.imported))
+        self.owned = owned_amounts(view.state)
+        self.ticker_box["values"] = [ticker_choice(t, self.owned.get(t))
+                                     for t in sorted(tickers | set(self.owned))]
+
+    # -- ticker dropdown ------------------------------------------------------
+
+    def chosen_ticker(self) -> str:
+        """The ticker typed or picked, without the amount shown in the list."""
+        text = self.ticker.get().strip()
+        return text.split()[0] if text else text
+
+    def pick_ticker(self, _event=None) -> None:
+        self.ticker.set(self.chosen_ticker())
+        self.ticker_box.selection_clear()
+
+    def listbox(self) -> str:
+        popdown = self.ticker_box.tk.eval(f"ttk::combobox::PopdownWindow {self.ticker_box}")
+        return f"{popdown}.f.l"
+
+    def mark_owned(self) -> None:
+        """Monospaced list so the amounts line up, and owned tickers in yellow."""
+        box = self.listbox()
+        tcl = self.ticker_box.tk
+        tcl.call(box, "configure", "-font", ("Consolas", 10))
+
+        def paint():  # Tk fills the list after this callback returns
+            if not tcl.call("winfo", "exists", box):
+                return
+            c = colors()
+            for i, value in enumerate(self.ticker_box["values"]):
+                if value.split()[0] in self.owned:
+                    tcl.call(box, "itemconfigure", i, "-background", c["held_bg"],
+                             "-foreground", c["ink"])
+        self.after_idle(paint)
 
     # -- trade ticket ---------------------------------------------------------
 
     def request(self, **flags) -> TradeRequest:
-        return TradeRequest("MY", "MANUAL", self.side_var.get(), self.ticker.get(),
+        return TradeRequest("MY", "MANUAL", self.side_var.get(), self.chosen_ticker(),
                             self.quantity.get(), self.reason.get() or "(preview)",
                             client_id=self.client_id, sleeve=self.sleeve.get(), **flags)
 
@@ -197,7 +234,7 @@ class MyAccountTab(AccountTab):
 
     def preview(self) -> None:
         try:
-            ticker = normalize_ticker(self.ticker.get())
+            ticker = normalize_ticker(self.chosen_ticker())
         except ValueError as exc:
             show_error(self, str(exc))
             return
@@ -260,6 +297,30 @@ class MyAccountTab(AccountTab):
         self.app.refresh_all()
 
 
+CHOICE_WIDTH = 22
+
+
+def owned_amounts(state) -> dict[str, str]:
+    """Ticker -> amount owned in My account, e.g. '12' or '12 +5 imp'."""
+    out = {}
+    for t in set(state.positions) | set(state.imported):
+        parts = []
+        if t in state.positions:
+            parts.append(fmt_qty(state.positions[t].quantity))
+        if t in state.imported:
+            parts.append(("+" if parts else "") + f"{fmt_qty(state.imported[t].quantity)} imp")
+        out[t] = " ".join(parts)
+    return out
+
+
+def ticker_choice(ticker: str, amount: str | None) -> str:
+    """A dropdown line: the ticker on the left, the amount owned on the right."""
+    if not amount:
+        return ticker
+    gap = max(2, CHOICE_WIDTH - len(ticker) - len(amount))
+    return f"{ticker}{' ' * gap}{amount}"
+
+
 def describe(plan: TradePlan) -> str:
     c = plan.currency
     lines = [
@@ -282,9 +343,32 @@ def describe(plan: TradePlan) -> str:
     return "\n".join(lines)
 
 
+PLAN_COLUMNS = [("Ticker", 90), ("Plan", 150), ("Sell target", 85), ("Stop", 105),
+                ("Buy more at", 90), ("Ref price", 85), ("Plan time", 125), ("Why", 340)]
+
+
+def plan_rows(rows, held) -> list[tuple]:
+    """Table rows for the AI plans of tickers still held. Sell-soon rows are red."""
+    return [(r["ticker"], (
+        r["ticker"], r["plan"], r["target"],
+        r["stop"] + (" (raised)" if r["trailing"] else ""),
+        r["add_at"] or "not now",
+        bold_num(fmt_price(r["price"])) if r["price"] else "n/a",
+        local_str(r["ts"]), r["why"]), "loss" if r["plan"].startswith("Sell soon") else "")
+        for r in rows if r["ticker"] in held]
+
+
 class AiAccountTab(AccountTab):
     account = "AI"
     title = "AI account"
+
+    def build_extra(self, body) -> None:
+        ttk.Label(body, text="AI plan for each holding: hold or sell soon (rough trading days), "
+                  "sell target, stop (it rises with the price) and where it would buy more. "
+                  "Rule-based estimates, not forecasts. Red rows: sell soon.",
+                  style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.plans = Table(body, PLAN_COLUMNS, height=4)
+        self.plans.grid(row=3, column=0, sticky="nsew")
 
     def build_side(self, side) -> None:
         box = ttk.LabelFrame(side, text="AI trading switch", padding=8)
@@ -316,7 +400,9 @@ class AiAccountTab(AccountTab):
         self.app.refresh_all()
 
     def refresh(self) -> None:
-        super().refresh()
+        view = super().refresh()
+        rows = self.ctx.db.conn().execute("SELECT * FROM ai_plans ORDER BY ticker").fetchall()
+        self.plans.set_rows(plan_rows(rows, view.state.positions))
         s = self.ctx.settings()
         self.ai_on.set(s.ai_enabled)
         self.suggest.set(s.ai_suggest_only)
@@ -330,7 +416,8 @@ class AiAccountTab(AccountTab):
             f"Max buys per day: {s.max_daily_buys}\n"
             f"Max positions: {s.max_positions}\n"
             f"Max exposure: {D(s.max_exposure_pct)}% of account\n"
-            f"Stop-loss: {D(s.stop_loss_pct)}% below average cost\n"
+            f"Stop: {D(s.stop_loss_pct)}% below cost, raised as the\n"
+            f"  price makes new highs\n"
             f"Min confidence: {s.min_confidence}\n"
             f"Strategy: {self.ctx.strategy.name}\n"
             f"LLM review: {review}"))

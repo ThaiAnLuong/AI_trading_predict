@@ -46,7 +46,7 @@ TEXT_FIELDS = (
         ("max_daily_buys", "Max buys per day", ""),
         ("max_positions", "Max positions", ""),
         ("max_exposure_pct", "Max exposure (%)", ""),
-        ("stop_loss_pct", "Stop-loss (%)", ""),
+        ("stop_loss_pct", "Stop-loss (%)", "below cost; rises with the highest price"),
         ("min_confidence", "Min confidence (0-1)", ""),
         ("news_lookback_hours", "News lookback (hours)", ""),
     )),

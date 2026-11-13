@@ -17,7 +17,7 @@ from ..timeutil import local_str, to_iso
 from ..valuation import load_quotes, load_state, load_trades, quote_status
 from .chart import ValueChart
 from ..ledger import realized_by_sale
-from .common import Table, show_error, show_info, sign_tag, text_box
+from .common import Table, bold_num, show_error, show_info, sign_tag, text_box
 
 
 def details_box(parent, height=8) -> tk.Text:
@@ -44,7 +44,7 @@ class WatchlistTab(ttk.Frame):
                   style="Muted.TLabel").grid(
             row=1, column=0, sticky="w", pady=(0, 6))
         self.table = Table(self, [("Ticker", 90), ("Company name", 170), ("AI holds", 65),
-                                  ("Price", 90), ("Ccy", 45), ("Exchange", 80), ("Price time", 125),
+                                  ("Ref price", 90), ("Ccy", 45), ("Exchange", 80), ("Price time", 125),
                                   ("Data", 130), ("Source and timing", 300), ("Slippage", 80)],
                            height=14)
         self.table.grid(row=2, column=0, sticky="nsew")
@@ -78,7 +78,7 @@ class WatchlistTab(ttk.Frame):
             q = quotes.get(t)
             held = t in ai_held
             rows.append((t, (
-                t, w["name"], "yes" if held else "", fmt_price(q["price"]) if q is not None else "n/a",
+                t, w["name"], "yes" if held else "", bold_num(fmt_price(q["price"])) if q is not None else "n/a",
                 currency_for(t), (q["exchange"] if q is not None else None) or "?",
                 local_str(q["quote_ts"]) if q is not None else "never",
                 quote_status(q, s, now),
@@ -160,7 +160,7 @@ class TradeLogTab(ttk.Frame):
         ttk.Button(bar, text="Apply", command=self.apply).pack(side="left", padx=6)
         ttk.Button(bar, text="Export these to CSV", command=self.export).pack(side="right")
         self.table = Table(self, [("Time", 125), ("Account", 80), ("By", 65), ("Action", 60),
-                                  ("Ticker", 80), ("Qty", 60), ("Ccy", 40), ("Reference", 85),
+                                  ("Ticker", 80), ("Qty", 60), ("Ccy", 40), ("Ref price", 85),
                                   ("Sim fill", 85), ("USD/CAD", 65), ("Cash CAD", 90),
                                   ("Realized", 100), ("Group", 75), ("Flags", 55), ("Reason", 220)],
                            height=16)
@@ -199,7 +199,7 @@ class TradeLogTab(ttk.Frame):
             gain, currency = realized.get(r["id"], (None, ""))
             table_rows.append((str(r["id"]), (
                 local_str(r["ts"]), ACCOUNT_LABELS[r["account"]], r["source"], r["side"], r["ticker"],
-                fmt_qty(r["quantity"]), r["currency"], fmt_price(r["reference_price"]),
+                fmt_qty(r["quantity"]), r["currency"], bold_num(fmt_price(r["reference_price"])),
                 fmt_price(r["fill_price"]), r["fx_rate"] or "-",
                 r["cash_delta"] if r["sleeve"] == "TRADING" else "none",
                 fmt_signed(gain, currency) if gain is not None else "",
@@ -231,7 +231,7 @@ class DecisionsTab(ttk.Frame):
         self.rowconfigure(1, weight=1)
         ttk.Label(self, text="AI decision log", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         self.table = Table(self, [("Time", 125), ("Ticker", 80), ("Action", 55), ("Status", 85),
-                                  ("Qty", 55), ("Reference", 85), ("Sim fill", 85), ("Ccy", 40),
+                                  ("Qty", 55), ("Ref price", 85), ("Sim fill", 85), ("Ccy", 40),
                                   ("Confidence", 80), ("Explanation", 430)], height=13)
         self.table.grid(row=1, column=0, sticky="nsew", pady=6)
         self.table.on_select(self.show)
@@ -244,7 +244,7 @@ class DecisionsTab(ttk.Frame):
         self.table.set_rows([(str(r["id"]), (
             local_str(r["ts"]), r["ticker"], r["action"], r["status"],
             fmt_qty(r["quantity"]) if r["quantity"] else "-",
-            fmt_price(r["reference_price"]) if r["reference_price"] else "-",
+            bold_num(fmt_price(r["reference_price"])) if r["reference_price"] else "-",
             fmt_price(r["simulated_fill_price"]) if r["simulated_fill_price"] else "-",
             r["currency"] or "-", r["confidence"] or "n/a", r["explanation"])) for r in rows])
 

@@ -28,6 +28,21 @@ DARK = {
 }
 ROW_TAGS = {"gain": "gain_bg", "loss": "loss_bg", "held": "held_bg"}
 
+# Tables cannot bold a single column, so reference prices use the bold digit characters
+# (Mathematical Sans-Serif Bold). Only the screen text changes; stored values and CSV
+# exports keep plain numbers.
+_BOLD_DIGITS = str.maketrans({str(i): chr(0x1D7EC + i) for i in range(10)})
+
+
+def bold_num(text: str) -> str:
+    """Show the digits of a number in bold inside a table cell."""
+    return text.translate(_BOLD_DIGITS)
+
+
+def plain_num(text: str) -> str:
+    """Undo bold_num."""
+    return text.translate({0x1D7EC + i: str(i) for i in range(10)})
+
 
 def sign_tag(value) -> str:
     """'gain' for above zero, 'loss' for below, nothing for zero or unknown."""

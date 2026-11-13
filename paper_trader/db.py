@@ -9,7 +9,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -96,6 +96,12 @@ CREATE TABLE IF NOT EXISTS ai_decisions (
     status TEXT NOT NULL CHECK (status IN ('EXECUTED','SUGGESTED','REJECTED','PAUSED','HOLD')),
     rejection_reason TEXT, strategy TEXT NOT NULL, trade_id INTEGER);
 CREATE INDEX IF NOT EXISTS idx_decisions_ts ON ai_decisions(ts);
+
+-- The AI's current plan for each holding it has (version 3). Rewritten at every cycle.
+CREATE TABLE IF NOT EXISTS ai_plans (
+    ticker TEXT PRIMARY KEY, ts TEXT NOT NULL, plan TEXT NOT NULL, target TEXT NOT NULL,
+    stop TEXT NOT NULL, trailing INTEGER NOT NULL DEFAULT 0, add_at TEXT,
+    why TEXT NOT NULL DEFAULT '', price TEXT, currency TEXT);
 
 CREATE TABLE IF NOT EXISTS news_items (
     id INTEGER PRIMARY KEY, title TEXT NOT NULL, source TEXT NOT NULL,
